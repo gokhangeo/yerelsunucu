@@ -5,9 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>Müdürüm Hub - Operasyon Merkezi</title>
+    <title>Müdürüm Hub - V5.1</title>
     
-    <!-- Kütüphaneler -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -18,60 +17,95 @@
 
     <style>
         body { background-color: #020617; margin: 0; overflow: hidden; -webkit-tap-highlight-color: transparent; }
-        .touch-none { touch-action: none; }
-        /* iPhone güvenli alan ayarı */
-        .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
         .no-select { user-select: none; -webkit-user-select: none; }
-        
-        /* Kaydırma çubuğunu gizle */
-        ::-webkit-scrollbar { width: 0px; background: transparent; }
+        .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+        @keyframes pulse-red {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { box-shadow: 0 0 0 15px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+        .animate-led { animation: pulse-red 2s infinite; }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
-    <script type="text/babel">
-        const { useState, useEffect, useRef, useMemo } = React;
-
+    <!-- Service Worker Kaydı (Geliştirilmiş ve Hata Kontrollü) -->
+    <script>
         /**
-         * Icon Bileşeni: Lucide simgelerini React ile güvenli şekilde render eder.
-         * 'toSvg' hatasını ve 'removeChild' hatalarını önlemek için 
-         * lucide.createIcons metodunu bir kapsayıcı (container) içinde kullanır.
+         * NOT: Service Worker'ın 'blob:' protokolüyle kaydı çoğu tarayıcıda güvenlik nedeniyle engellenir.
+         * Uygulamayı GitHub Pages'e yüklediğinizde, 'sw.js' adında ayrı bir dosya oluşturup 
+         * içeriğine Service Worker kodunu koymak en sağlıklı yöntemdir.
+         * Burada mevcut hata çökmelerini engellemek için try-catch ekledik.
          */
+        async function registerServiceWorker() {
+            if ('serviceWorker' in navigator) {
+                try {
+                    // Mevcut ortam 'blob:' desteklemiyorsa veya kısıtlıysa hata fırlatır, uygulama çalışmaya devam eder.
+                    const swCode = `
+                        self.addEventListener('install', () => self.skipWaiting());
+                        self.addEventListener('activate', () => self.clients.claim());
+                        self.addEventListener('push', (event) => {
+                            const data = event.data ? event.data.json() : {};
+                            self.registration.showNotification(data.title || "Yeni Bildirim", {
+                                body: data.body || "Müdürüm, bir hareketlilik var!",
+                                icon: 'https://cdn-icons-png.flaticon.com/512/552/552489.png'
+                            });
+                        });
+                    `;
+                    const blob = new Blob([swCode], { type: 'text/javascript' });
+                    const url = URL.createObjectURL(blob);
+                    
+                    // Sadece güvenli (HTTPS) veya localhost ortamlarında ve blob destekleniyorsa çalışır
+                    await navigator.serviceWorker.register(url);
+                    console.log("Service Worker başarıyla (geçici) kaydedildi.");
+                } catch (error) {
+                    console.warn("Service Worker kaydı bu ortamda desteklenmiyor (Blob Protocol Error). Arka plan bildirimleri kısıtlı olabilir.", error);
+                }
+            }
+        }
+        registerServiceWorker();
+    </script>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // Ses Efektleri
+        const playBeep = (freq, duration) => {
+            try {
+                const context = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = context.createOscillator();
+                const gain = context.createGain();
+                osc.connect(gain);
+                gain.connect(context.destination);
+                osc.frequency.value = freq;
+                gain.gain.setValueAtTime(0.1, context.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, context.currentTime + duration);
+                osc.start();
+                osc.stop(context.currentTime + duration);
+            } catch(e) {}
+        };
+
+        // Geliştirilmiş Güvenli Icon Bileşeni
         const Icon = ({ name, size = 20, className = "" }) => {
             const containerRef = useRef(null);
-            
             useEffect(() => {
                 if (window.lucide && containerRef.current) {
-                    // İçeriği temizle ve yeni i etiketi ekle
                     containerRef.current.innerHTML = `<i data-lucide="${name}"></i>`;
-                    
-                    // Lucide'e bu kapsayıcı içindeki ikonları işlemesini söyle
-                    window.lucide.createIcons({
-                        attrs: {
-                            width: size,
-                            height: size,
-                            class: className,
-                            'stroke-width': 2
-                        }
+                    window.lucide.createIcons({ 
+                        attrs: { 
+                            width: size, 
+                            height: size, 
+                            class: className, 
+                            'stroke-width': 2 
+                        } 
                     });
                 }
-                
-                // Cleanup: React bu bileşeni kaldırırken DOM manipülasyonu hatası vermemesi için içeriği boşaltıyoruz
                 return () => {
-                    if (containerRef.current) {
-                        containerRef.current.innerHTML = '';
-                    }
+                    if (containerRef.current) containerRef.current.innerHTML = '';
                 };
             }, [name, size, className]);
-
-            return (
-                <span 
-                    ref={containerRef} 
-                    className={`inline-flex items-center justify-center ${className}`} 
-                    style={{ width: size, height: size, minWidth: size, minHeight: size }} 
-                />
-            );
+            return <span ref={containerRef} className={`inline-flex items-center justify-center ${className}`} style={{ width: size, height: size, minWidth: size, minHeight: size }} />;
         };
 
         const App = () => {
@@ -86,6 +120,8 @@
             const [receivedFile, setReceivedFile] = useState(null);
             const [showQr, setShowQr] = useState(false);
             const [isTalking, setIsTalking] = useState(false);
+            const [pairedDevices, setPairedDevices] = useState([]);
+            const [notifyPermission, setNotifyPermission] = useState(Notification ? Notification.permission : 'denied');
 
             const fileInputRef = useRef(null);
             const qrRef = useRef(null);
@@ -94,60 +130,86 @@
             const myStreamRef = useRef(null);
             const currentCallRef = useRef(null);
 
+            // Bildirim Gönderme (Uygulama açıkken veya Service Worker aktifken)
+            const sendLocalNotification = (title, body) => {
+                if (window.Notification && Notification.permission === "granted") {
+                    try {
+                        new Notification(title, { body, icon: "https://cdn-icons-png.flaticon.com/512/552/552489.png" });
+                    } catch (e) {
+                        // Bazı mobil tarayıcılarda direkt Notification() hataya düşebilir, SW üzerinden gönderim gerekebilir
+                        if ('serviceWorker' in navigator) {
+                            navigator.serviceWorker.ready.then(reg => {
+                                reg.showNotification(title, { body, icon: "https://cdn-icons-png.flaticon.com/512/552/552489.png" });
+                            });
+                        }
+                    }
+                }
+            };
+
+            const requestPermission = () => {
+                if (window.Notification) {
+                    Notification.requestPermission().then(perm => setNotifyPermission(perm));
+                }
+            };
+
             useEffect(() => {
-                const urlParams = new URLSearchParams(window.location.search);
-                const targetId = urlParams.get('join');
-                if (targetId) setRemoteId(targetId);
+                let savedId = localStorage.getItem('mudurum_hub_id');
+                if (!savedId) {
+                    savedId = Math.random().toString(36).substring(2, 7).toUpperCase();
+                    localStorage.setItem('mudurum_hub_id', savedId);
+                }
+                setMyId(savedId);
 
-                const shortId = Math.random().toString(36).substring(2, 7).toUpperCase();
-                const newPeer = new window.Peer(shortId);
-                
-                newPeer.on('open', (id) => {
-                    setMyId(id);
-                    setPeer(newPeer);
-                });
+                const savedDevices = JSON.parse(localStorage.getItem('mudurum_paired_devices') || '[]');
+                setPairedDevices(savedDevices);
 
+                const newPeer = new window.Peer(savedId);
+                newPeer.on('open', (id) => setPeer(newPeer));
                 newPeer.on('connection', (conn) => setupConnection(conn));
                 newPeer.on('call', (call) => {
                     call.answer(); 
+                    sendLocalNotification("Telsiz Çağrısı", "Müdürüm, telsizden ses geliyor!");
+                    if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
                     call.on('stream', (stream) => {
                         if (remoteAudioRef.current) remoteAudioRef.current.srcObject = stream;
                     });
                 });
 
-                return () => {
-                    if (newPeer) newPeer.destroy();
-                };
+                return () => { if (newPeer) newPeer.destroy(); };
             }, []);
-
-            useEffect(() => {
-                if (chatEndRef.current) {
-                    chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
-                }
-            }, [messages]);
 
             const setupConnection = (conn) => {
                 setConnection(conn);
                 setTransferStatus('connected');
+                
+                setPairedDevices(prev => {
+                    if (!prev.includes(conn.peer)) {
+                        const updated = [conn.peer, ...prev].slice(0, 5);
+                        localStorage.setItem('mudurum_paired_devices', JSON.stringify(updated));
+                        return updated;
+                    }
+                    return prev;
+                });
+
                 conn.on('data', (data) => {
                     if (data.type === 'file') {
+                        sendLocalNotification("Yeni Dosya", `${conn.peer} bir dosya sızdırdı!`);
+                        if (navigator.vibrate) navigator.vibrate(200);
                         const blob = new Blob([data.file], { type: data.fileType });
                         setReceivedFile({ url: URL.createObjectURL(blob), name: data.fileName });
                         setTransferStatus('completed');
                     } else if (data.type === 'chat') {
+                        sendLocalNotification("Yeni Mesaj", `${conn.peer}: ${data.text}`);
                         setMessages(prev => [...prev, { id: Date.now(), sender: 'other', text: data.text, time: new Date().toLocaleTimeString() }]);
                     }
                 });
-                conn.on('close', () => {
-                    setConnection(null);
-                    setTransferStatus('idle');
-                });
             };
 
-            const connectToPeer = () => {
-                if (!remoteId || !peer) return;
+            const connectToPeer = (targetId) => {
+                const id = targetId || remoteId;
+                if (!id || !peer) return;
                 setTransferStatus('connecting');
-                const conn = peer.connect(remoteId);
+                const conn = peer.connect(id);
                 setupConnection(conn);
             };
 
@@ -160,29 +222,29 @@
 
             const startTalking = async (e) => {
                 if (e) e.preventDefault();
-                if (isTalking || !remoteId) return;
+                if (isTalking || !connection) return;
                 try {
+                    playBeep(880, 0.1);
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     myStreamRef.current = stream;
                     setIsTalking(true);
-                    currentCallRef.current = peer.call(remoteId, stream);
+                    currentCallRef.current = peer.call(connection.peer, stream);
                 } catch (err) { 
-                    console.error("Mikrofon erişim hatası:", err);
+                    console.error("Mikrofon hatası:", err);
                     setIsTalking(false); 
                 }
             };
 
             const stopTalking = (e) => {
                 if (e) e.preventDefault();
+                if (!isTalking) return;
                 setIsTalking(false);
+                playBeep(440, 0.15);
                 if (myStreamRef.current) {
                     myStreamRef.current.getTracks().forEach(track => track.stop());
                     myStreamRef.current = null;
                 }
-                if (currentCallRef.current) {
-                    currentCallRef.current.close();
-                    currentCallRef.current = null;
-                }
+                if (currentCallRef.current) currentCallRef.current.close();
             };
 
             const sendFile = (e) => {
@@ -200,14 +262,12 @@
             useEffect(() => {
                 if (myId && showQr && qrRef.current) {
                     qrRef.current.innerHTML = "";
-                    const baseUrl = window.location.href.split('?')[0];
-                    new window.QRCode(qrRef.current, {
-                        text: `${baseUrl}?join=${myId}`,
-                        width: 180,
+                    new window.QRCode(qrRef.current, { 
+                        text: `${window.location.href.split('?')[0]}?join=${myId}`, 
+                        width: 180, 
                         height: 180,
                         colorDark : "#0f172a",
-                        colorLight : "#ffffff",
-                        correctLevel : window.QRCode.CorrectLevel.H
+                        colorLight : "#ffffff"
                     });
                 }
             }, [myId, showQr]);
@@ -216,130 +276,116 @@
                 <div className="h-screen w-screen flex items-center justify-center bg-slate-950 font-sans no-select overflow-hidden">
                     <div className="w-full max-w-md bg-slate-900 h-full md:h-[90vh] md:rounded-[2.5rem] flex flex-col relative border-slate-800 border-x shadow-2xl">
                         
-                        {/* Header */}
+                        {/* Header Section */}
                         <div className="p-6 bg-slate-900 border-b border-slate-800 shrink-0">
                             <div className="flex justify-between items-center mb-4">
-                                <h1 className="text-sm font-black text-indigo-500 uppercase tracking-widest flex items-center gap-2">
-                                    <Icon name="zap" size={18} className="text-yellow-400" /> HUB MERKEZİ
-                                </h1>
-                                <button 
-                                    onClick={() => setShowQr(!showQr)} 
-                                    className={`p-2 rounded-xl transition-all ${showQr ? 'bg-red-500/20 text-red-500' : 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20'}`}
-                                >
-                                    <Icon name={showQr ? "x" : "qr-code"} size={18} />
-                                </button>
+                                <div className="flex items-center gap-2">
+                                    <div className={`w-3 h-3 rounded-full ${isTalking ? 'bg-red-500 animate-led' : (connection ? 'bg-green-500' : 'bg-slate-700')}`}></div>
+                                    <h1 className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em]">OPERASYON HUB V5.1</h1>
+                                </div>
+                                <div className="flex gap-2">
+                                    {notifyPermission !== 'granted' && (
+                                        <button onClick={requestPermission} className="p-2 bg-amber-500/10 text-amber-500 rounded-xl hover:bg-amber-500/20 transition-colors">
+                                            <Icon name="bell-ring" size={18} />
+                                        </button>
+                                    )}
+                                    <button onClick={() => setShowQr(!showQr)} className="p-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-500 shadow-lg shadow-indigo-600/20 transition-all">
+                                        <Icon name={showQr ? "x" : "qr-code"} size={18} />
+                                    </button>
+                                </div>
                             </div>
                             <div className="bg-slate-950 p-3 rounded-2xl flex items-center justify-between border border-slate-800">
-                                <div className="overflow-hidden">
-                                    <p className="text-[9px] text-slate-500 font-bold uppercase">Kimliğiniz</p>
-                                    <p className="text-xl font-mono font-black text-white truncate">{myId || "Yükleniyor..."}</p>
+                                <div>
+                                    <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">SABİT KİMLİĞİNİZ</p>
+                                    <p className="text-xl font-mono font-black text-white">{myId || "Yükleniyor..."}</p>
                                 </div>
-                                <button 
-                                    onClick={() => {
-                                        navigator.clipboard.writeText(myId);
-                                    }} 
-                                    className="text-slate-600 hover:text-indigo-400 p-2 transition-colors"
-                                >
+                                <button onClick={() => navigator.clipboard.writeText(myId)} className="text-slate-600 p-2 hover:text-indigo-400 transition-colors">
                                     <Icon name="copy" size={16} />
                                 </button>
                             </div>
                         </div>
 
-                        {/* QR Modal (Inline) */}
-                        {showQr && (
-                            <div className="absolute inset-0 z-50 bg-slate-950/95 flex items-center justify-center p-8 animate-in fade-in duration-200">
-                                <div className="bg-white p-8 rounded-[2.5rem] text-center w-full max-w-[280px] shadow-2xl border-4 border-indigo-500/20">
-                                    <div className="flex justify-between items-center mb-6 text-slate-900 font-black text-sm uppercase">
-                                        <span>HIZLI EŞLEŞTİR</span>
-                                        <button onClick={()=>setShowQr(false)} className="text-slate-300 hover:text-red-500 transition-colors">
-                                            <Icon name="x-circle" size={24}/>
-                                        </button>
-                                    </div>
-                                    <div className="flex justify-center mb-6 bg-white p-2 rounded-xl overflow-hidden">
-                                        <div ref={qrRef}></div>
-                                    </div>
-                                    <p className="text-[10px] text-slate-400 uppercase font-black tracking-tight">Kamerayı koda doğrultun</p>
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Tabs */}
+                        {/* Navigation Tabs */}
                         <div className="flex p-2 bg-slate-950/30 gap-1 border-b border-slate-800 shrink-0">
-                            {[
-                                { id: 'transfer', icon: 'file-up', label: 'Dosya' },
-                                { id: 'chat', icon: 'message-square', label: 'Mesaj' },
-                                { id: 'radio', icon: 'volume-2', label: 'Telsiz' }
-                            ].map(tab => (
-                                <button 
-                                    key={tab.id}
-                                    onClick={() => setActiveTab(tab.id)}
-                                    className={`flex-1 flex flex-col items-center gap-1 py-3 rounded-2xl transition-all font-bold text-[10px] uppercase tracking-tighter ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-600 hover:bg-slate-800/50'}`}
-                                >
-                                    <Icon name={tab.icon} size={18} />
-                                    {tab.label}
+                            {['transfer', 'chat', 'radio'].map(tab => (
+                                <button key={tab} onClick={() => setActiveTab(tab)} className={`flex-1 py-3 rounded-2xl transition-all font-bold text-[10px] uppercase tracking-tighter ${activeTab === tab ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30' : 'text-slate-600 hover:bg-slate-800'}`}>
+                                    <Icon name={tab === 'transfer' ? 'file-up' : (tab === 'chat' ? 'message-square' : 'volume-2')} size={18} className="mb-1" />
+                                    <br/>{tab === 'transfer' ? 'Dosya' : (tab === 'chat' ? 'Mesaj' : 'Telsiz')}
                                 </button>
                             ))}
                         </div>
 
-                        {/* Content Area */}
-                        <div className="flex-1 overflow-y-auto p-6 relative">
-                            {!connection && transferStatus !== 'connecting' ? (
-                                <div className="h-full flex flex-col items-center justify-center space-y-8 animate-in fade-in duration-500">
-                                    <div className="w-24 h-24 bg-slate-800 rounded-[2.5rem] flex items-center justify-center border border-slate-700 shadow-xl relative overflow-hidden group">
-                                        <div className="absolute inset-0 bg-indigo-500/10 group-hover:bg-indigo-500/20 transition-colors"></div>
-                                        <Icon name="monitor" size={48} className="text-slate-500 group-hover:text-indigo-400 transition-colors" />
+                        {/* Content Body */}
+                        <div className="flex-1 overflow-y-auto p-6 relative bg-slate-900/40">
+                            {showQr && (
+                                <div className="absolute inset-0 z-50 bg-slate-950/98 backdrop-blur-md flex items-center justify-center p-8 animate-in fade-in duration-300">
+                                    <div className="bg-white p-8 rounded-[2.5rem] text-center w-full max-w-[280px] shadow-2xl">
+                                        <div className="flex justify-between items-center mb-6 text-slate-900 font-black text-xs uppercase tracking-widest">
+                                            <span>SİSTEM EŞLEŞTİR</span>
+                                            <button onClick={()=>setShowQr(false)} className="text-slate-300 hover:text-red-500 transition-colors"><Icon name="x-circle" size={24}/></button>
+                                        </div>
+                                        <div ref={qrRef} className="flex justify-center mb-6 bg-white p-2 rounded-xl"></div>
+                                        <p className="text-[10px] text-slate-400 uppercase font-black leading-tight">Diğer cihazdan taratın</p>
                                     </div>
-                                    <div className="w-full space-y-4">
-                                        <div className="text-center">
-                                            <h3 className="font-black text-white text-lg uppercase tracking-tighter">Bağlantı Kur</h3>
-                                            <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">Hedef cihazın kodunu girin</p>
+                                </div>
+                            )}
+
+                            {!connection && transferStatus !== 'connecting' ? (
+                                <div className="h-full flex flex-col space-y-6">
+                                    <div className="flex-1 flex flex-col items-center justify-center space-y-4">
+                                        <div className="w-16 h-16 bg-slate-800 rounded-3xl flex items-center justify-center shadow-inner border border-slate-700">
+                                            <Icon name="shield" size={32} className="text-indigo-500" />
                                         </div>
                                         <input 
                                             value={remoteId} 
-                                            onChange={(e)=>setRemoteId(e.target.value.toUpperCase())}
-                                            placeholder="HEDEF KOD" 
-                                            className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-center font-mono font-black text-2xl text-indigo-400 outline-none focus:border-indigo-500 transition-all placeholder:text-slate-800" 
+                                            onChange={(e)=>setRemoteId(e.target.value.toUpperCase())} 
+                                            placeholder="HEDEF KODU GİRİN" 
+                                            className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-center font-mono font-black text-2xl text-indigo-400 outline-none focus:border-indigo-600 transition-all placeholder:text-slate-800" 
                                         />
-                                        <button 
-                                            onClick={connectToPeer} 
-                                            className="w-full bg-indigo-600 py-4 rounded-2xl font-black uppercase text-sm tracking-widest active:scale-95 transition-all shadow-xl shadow-indigo-600/10 hover:bg-indigo-500 text-white"
-                                        >
-                                            Sisteme Bağlan
-                                        </button>
+                                        <button onClick={() => connectToPeer()} className="w-full bg-indigo-600 py-4 rounded-2xl font-black text-sm uppercase text-white shadow-xl shadow-indigo-600/20 hover:bg-indigo-500 transition-all active:scale-95">BAĞLANTIYI KUR</button>
                                     </div>
+
+                                    {pairedDevices.length > 0 && (
+                                        <div className="bg-slate-950/40 p-4 rounded-3xl border border-slate-800 animate-in slide-in-from-bottom-4 duration-500">
+                                            <p className="text-[10px] font-black text-slate-600 uppercase mb-3 tracking-[0.2em] text-center">GÜVENLİ HAFIZA</p>
+                                            <div className="space-y-2">
+                                                {pairedDevices.map(id => (
+                                                    <button key={id} onClick={() => connectToPeer(id)} className="w-full flex justify-between items-center bg-slate-900 p-3 rounded-xl border border-slate-800 hover:border-indigo-500 hover:bg-slate-800 transition-all group">
+                                                        <span className="font-mono font-bold text-slate-400 group-hover:text-indigo-400">{id}</span>
+                                                        <Icon name="zap" size={14} className="text-slate-700 group-hover:text-indigo-500" />
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             ) : (
-                                <div className="h-full animate-in fade-in duration-300">
+                                <div className="h-full flex flex-col animate-in fade-in duration-300">
                                     {activeTab === 'transfer' && (
                                         <div className="h-full flex flex-col justify-center space-y-6">
-                                            <div className="bg-slate-950/50 border-2 border-dashed border-slate-800 rounded-[2.5rem] p-8 text-center relative overflow-hidden">
+                                            <div className="bg-slate-950/50 border-2 border-dashed border-slate-800 rounded-[2.5rem] p-8 text-center shadow-inner">
                                                 {transferStatus === 'completed' && receivedFile ? (
                                                     <div className="space-y-6 animate-in zoom-in duration-300">
-                                                        <Icon name="check-circle" size={64} className="text-green-500 mx-auto" />
+                                                        <Icon name="check-circle" size={56} className="text-green-500 mx-auto" />
                                                         <div className="space-y-1">
-                                                            <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Dosya Alındı</p>
+                                                            <p className="text-[10px] text-slate-500 font-black uppercase">DOSYA SIZDIRILDI</p>
                                                             <p className="font-black text-sm text-white truncate px-4">{receivedFile.name}</p>
                                                         </div>
-                                                        <a href={receivedFile.url} download={receivedFile.name} className="block w-full bg-green-600 py-4 rounded-2xl font-black text-xs uppercase shadow-lg shadow-green-900/40 text-white hover:bg-green-500 transition-colors">Cihaza Kaydet</a>
-                                                        <button onClick={() => {setReceivedFile(null); setTransferStatus('connected');}} className="text-[10px] text-slate-600 font-black uppercase underline tracking-widest hover:text-slate-400 transition-colors">Yeni Transfer</button>
+                                                        <a href={receivedFile.url} download={receivedFile.name} className="block w-full bg-green-600 py-4 rounded-2xl font-black text-xs text-white shadow-lg shadow-green-900/40 hover:bg-green-500">SİSTEME KAYDET</a>
+                                                        <button onClick={() => {setReceivedFile(null); setTransferStatus('connected');}} className="text-[10px] text-slate-600 font-black uppercase underline hover:text-slate-400">YENİ AKTARIM</button>
                                                     </div>
                                                 ) : (
                                                     <div className="space-y-6">
-                                                        <Icon name="file-up" size={64} className="text-indigo-500 mx-auto opacity-50" />
-                                                        <p className="text-xs text-slate-500 font-bold px-4">"Müdürüm, güvenli hat üzerinden dosya aktarımı için hazırız."</p>
+                                                        <Icon name="file-up" size={56} className="text-indigo-500/50 mx-auto" />
+                                                        <p className="text-xs text-slate-500 font-bold px-4 italic">"Müdürüm, dosya aktarımı için güvenli kanal aktif."</p>
                                                         <input type="file" onChange={sendFile} className="hidden" ref={fileInputRef} />
-                                                        <button 
-                                                            onClick={() => fileInputRef.current.click()} 
-                                                            className="bg-indigo-600 px-10 py-4 rounded-2xl font-black text-xs uppercase text-white shadow-xl shadow-indigo-600/20 hover:bg-indigo-500 transition-all"
-                                                        >
-                                                            Dosya Gönder
-                                                        </button>
+                                                        <button onClick={() => fileInputRef.current.click()} className="bg-indigo-600 px-10 py-4 rounded-2xl font-black text-xs text-white uppercase shadow-xl shadow-indigo-600/20 hover:bg-indigo-500">DOSYA GÖNDER</button>
                                                     </div>
                                                 )}
                                                 {transferStatus === 'sending' && (
-                                                    <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-center p-8 space-y-4">
-                                                        <Icon name="refresh-cw" size={48} className="text-indigo-400 animate-spin" />
-                                                        <p className="text-xs font-black text-white uppercase tracking-widest">Dosya Sızdırılıyor...</p>
+                                                    <div className="absolute inset-0 bg-slate-900/90 flex flex-col items-center justify-center p-8 space-y-4 rounded-[2.5rem]">
+                                                        <Icon name="refresh-cw" size={40} className="text-indigo-500 animate-spin" />
+                                                        <p className="text-[10px] font-black text-white uppercase tracking-widest">AKTARIYOR...</p>
                                                     </div>
                                                 )}
                                             </div>
@@ -348,73 +394,53 @@
                                     {activeTab === 'chat' && (
                                         <div className="h-full flex flex-col">
                                             <div className="flex-1 space-y-4 mb-4 overflow-y-auto pr-1">
-                                                {messages.length === 0 && (
-                                                    <div className="h-full flex flex-col items-center justify-center opacity-20 grayscale">
-                                                        <Icon name="message-square" size={40} />
-                                                        <p className="text-[10px] font-black uppercase mt-2">Mesaj Yok</p>
-                                                    </div>
-                                                )}
                                                 {messages.map((m) => (
                                                     <div key={m.id} className={`flex flex-col ${m.sender === 'me' ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-2 duration-200`}>
-                                                        <div className={`max-w-[85%] p-4 rounded-3xl text-sm font-medium leading-relaxed ${m.sender === 'me' ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-slate-800 text-slate-200 rounded-tl-none border border-slate-700'}`}>
-                                                            {m.text}
-                                                        </div>
+                                                        <div className={`max-w-[85%] p-4 rounded-3xl text-sm font-medium ${m.sender === 'me' ? 'bg-indigo-600 text-white rounded-tr-none shadow-lg' : 'bg-slate-800 text-slate-200 rounded-tl-none border border-slate-700'}`}>{m.text}</div>
                                                         <span className="text-[8px] text-slate-600 mt-1 uppercase font-black tracking-widest">{m.time}</span>
                                                     </div>
                                                 ))}
                                                 <div ref={chatEndRef} />
                                             </div>
-                                            <div className="flex gap-2 bg-slate-950 p-2 rounded-[2rem] border border-slate-800">
-                                                <input 
-                                                    value={inputText} 
-                                                    onChange={(e)=>setInputText(e.target.value)} 
-                                                    onKeyPress={(e)=>e.key === 'Enter' && sendMessage()} 
-                                                    placeholder="MESAJINIZI YAZIN..." 
-                                                    className="flex-1 bg-transparent border-none rounded-2xl px-4 py-2 text-xs font-bold outline-none text-white placeholder:text-slate-700" 
-                                                />
-                                                <button onClick={sendMessage} className="bg-indigo-600 p-3 rounded-full text-white shadow-lg shadow-indigo-600/20 active:scale-90 transition-transform">
-                                                    <Icon name="send" size={20} />
-                                                </button>
+                                            <div className="flex gap-2 p-2 bg-slate-950 rounded-[2rem] border border-slate-800 shrink-0">
+                                                <input value={inputText} onChange={(e)=>setInputText(e.target.value)} onKeyPress={(e)=>e.key === 'Enter' && sendMessage()} placeholder="MESAJINIZI YAZIN..." className="flex-1 bg-transparent px-4 py-2 text-xs font-bold outline-none text-white placeholder:text-slate-800" />
+                                                <button onClick={sendMessage} className="bg-indigo-600 p-3 rounded-full text-white shadow-lg active:scale-90 transition-transform"><Icon name="send" size={20} /></button>
                                             </div>
                                         </div>
                                     )}
                                     {activeTab === 'radio' && (
                                         <div className="h-full flex flex-col items-center justify-center space-y-12">
                                             <div className="relative">
-                                                <div className={`absolute -inset-16 bg-red-500 rounded-full blur-[60px] transition-all duration-500 ${isTalking ? 'opacity-40 scale-150' : 'opacity-0 scale-50'}`}></div>
+                                                <div className={`absolute -inset-16 bg-red-600 rounded-full blur-[60px] transition-all duration-500 ${isTalking ? 'opacity-40 scale-150' : 'opacity-0 scale-50'}`}></div>
                                                 <button 
-                                                    onMouseDown={startTalking} 
-                                                    onMouseUp={stopTalking} 
-                                                    onMouseLeave={stopTalking}
-                                                    onTouchStart={startTalking} 
-                                                    onTouchEnd={stopTalking}
-                                                    className={`relative w-48 h-48 rounded-full flex flex-col items-center justify-center gap-3 border-8 transition-all active:scale-90 touch-none ${isTalking ? 'bg-red-600 border-red-400 shadow-[0_0_50px_rgba(239,68,68,0.4)]' : 'bg-slate-800 border-slate-700 shadow-2xl shadow-black/50 hover:bg-slate-700'}`}
+                                                    onMouseDown={startTalking} onMouseUp={stopTalking} onMouseLeave={stopTalking} onTouchStart={startTalking} onTouchEnd={stopTalking}
+                                                    className={`relative w-48 h-48 rounded-full flex flex-col items-center justify-center gap-3 border-8 transition-all active:scale-90 touch-none shadow-2xl ${isTalking ? 'bg-red-600 border-red-400 shadow-red-600/50' : 'bg-slate-800 border-slate-700'}`}
                                                 >
                                                     <Icon name={isTalking ? 'mic' : 'mic-off'} size={56} className={isTalking ? 'animate-pulse text-white' : 'text-slate-600'} />
-                                                    <span className="text-[11px] font-black text-white tracking-[0.2em]">{isTalking ? "YAYINDASIN" : "BAS KONUŞ"}</span>
+                                                    <span className="text-[11px] font-black text-white uppercase tracking-widest">{isTalking ? "YAYINDASIN" : "BAS KONUŞ"}</span>
                                                 </button>
                                             </div>
-                                            <audio ref={remoteAudioRef} autoPlay />
                                             <div className="text-center space-y-1">
-                                                <p className="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em]">Güvenli Ses Hattı</p>
+                                                <p className="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em]">ŞİFRELİ SES KANALI</p>
                                                 <div className="flex items-center justify-center gap-2">
-                                                    <div className={`w-1.5 h-1.5 rounded-full ${connection ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
-                                                    <p className="text-xs font-bold text-slate-400">{connection ? 'OPERASYON AKTİF' : 'BAĞLANTI BEKLENİYOR'}</p>
+                                                    <div className={`w-2 h-2 rounded-full ${connection ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
+                                                    <p className="text-xs font-bold text-slate-400 uppercase tracking-tighter truncate max-w-[150px]">{connection ? `AKTİF: ${connection.peer}` : 'HAT BEKLENİYOR'}</p>
                                                 </div>
                                             </div>
+                                            <audio ref={remoteAudioRef} autoPlay />
                                         </div>
                                     )}
                                 </div>
                             )}
                         </div>
 
-                        {/* Footer */}
-                        <div className="p-4 bg-slate-950 flex justify-between items-center px-10 border-t border-slate-800 shrink-0 safe-bottom">
+                        {/* Control Footer */}
+                        <div className="p-4 bg-slate-950 flex justify-between items-center px-10 border-t border-slate-800 safe-bottom">
                             <div className="flex items-center gap-2 opacity-30">
                                 <Icon name="shield-check" size={12} className="text-indigo-500" />
-                                <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">P2P NODE ACTIVE</span>
+                                <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">P2P NODE v5.1</span>
                             </div>
-                            <span className="text-[9px] font-black text-indigo-900 uppercase tracking-tighter">Müdürüm Hub v3.1</span>
+                            <span className="text-[9px] font-black text-indigo-900 uppercase tracking-tighter">MÜDÜRÜM HUB PRO</span>
                         </div>
                     </div>
                 </div>
