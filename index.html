@@ -17,30 +17,61 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 
     <style>
-        body { background-color: #020617; margin: 0; overflow: hidden; }
+        body { background-color: #020617; margin: 0; overflow: hidden; -webkit-tap-highlight-color: transparent; }
         .touch-none { touch-action: none; }
         /* iPhone güvenli alan ayarı */
         .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+        .no-select { user-select: none; -webkit-user-select: none; }
+        
+        /* Kaydırma çubuğunu gizle */
+        ::-webkit-scrollbar { width: 0px; background: transparent; }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useRef } = React;
+        const { useState, useEffect, useRef, useMemo } = React;
 
-        // Lucide ikonu için yardımcı bileşen
+        /**
+         * Icon Bileşeni: Lucide simgelerini React ile güvenli şekilde render eder.
+         * 'toSvg' hatasını ve 'removeChild' hatalarını önlemek için 
+         * lucide.createIcons metodunu bir kapsayıcı (container) içinde kullanır.
+         */
         const Icon = ({ name, size = 20, className = "" }) => {
-            const [iconSvg, setIconSvg] = useState("");
+            const containerRef = useRef(null);
+            
             useEffect(() => {
-                if (window.lucide) {
-                    const svg = window.lucide.createIcons({
-                        icons: { [name]: true },
-                        attrs: { width: size, height: size, class: className }
+                if (window.lucide && containerRef.current) {
+                    // İçeriği temizle ve yeni i etiketi ekle
+                    containerRef.current.innerHTML = `<i data-lucide="${name}"></i>`;
+                    
+                    // Lucide'e bu kapsayıcı içindeki ikonları işlemesini söyle
+                    window.lucide.createIcons({
+                        attrs: {
+                            width: size,
+                            height: size,
+                            class: className,
+                            'stroke-width': 2
+                        }
                     });
                 }
+                
+                // Cleanup: React bu bileşeni kaldırırken DOM manipülasyonu hatası vermemesi için içeriği boşaltıyoruz
+                return () => {
+                    if (containerRef.current) {
+                        containerRef.current.innerHTML = '';
+                    }
+                };
             }, [name, size, className]);
-            return <i data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
+
+            return (
+                <span 
+                    ref={containerRef} 
+                    className={`inline-flex items-center justify-center ${className}`} 
+                    style={{ width: size, height: size, minWidth: size, minHeight: size }} 
+                />
+            );
         };
 
         const App = () => {
@@ -84,11 +115,15 @@
                     });
                 });
 
-                setTimeout(() => window.lucide.createIcons(), 500);
+                return () => {
+                    if (newPeer) newPeer.destroy();
+                };
             }, []);
 
             useEffect(() => {
-                if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+                if (chatEndRef.current) {
+                    chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+                }
             }, [messages]);
 
             const setupConnection = (conn) => {
@@ -100,8 +135,12 @@
                         setReceivedFile({ url: URL.createObjectURL(blob), name: data.fileName });
                         setTransferStatus('completed');
                     } else if (data.type === 'chat') {
-                        setMessages(prev => [...prev, { sender: 'other', text: data.text, time: new Date().toLocaleTimeString() }]);
+                        setMessages(prev => [...prev, { id: Date.now(), sender: 'other', text: data.text, time: new Date().toLocaleTimeString() }]);
                     }
+                });
+                conn.on('close', () => {
+                    setConnection(null);
+                    setTransferStatus('idle');
                 });
             };
 
@@ -113,9 +152,9 @@
             };
 
             const sendMessage = () => {
-                if (!inputText || !connection) return;
+                if (!inputText.trim() || !connection) return;
                 connection.send({ type: 'chat', text: inputText });
-                setMessages(prev => [...prev, { sender: 'me', text: inputText, time: new Date().toLocaleTimeString() }]);
+                setMessages(prev => [...prev, { id: Date.now(), sender: 'me', text: inputText, time: new Date().toLocaleTimeString() }]);
                 setInputText('');
             };
 
@@ -127,7 +166,10 @@
                     myStreamRef.current = stream;
                     setIsTalking(true);
                     currentCallRef.current = peer.call(remoteId, stream);
-                } catch (err) { setIsTalking(false); }
+                } catch (err) { 
+                    console.error("Mikrofon erişim hatası:", err);
+                    setIsTalking(false); 
+                }
             };
 
             const stopTalking = (e) => {
@@ -137,7 +179,10 @@
                     myStreamRef.current.getTracks().forEach(track => track.stop());
                     myStreamRef.current = null;
                 }
-                if (currentCallRef.current) currentCallRef.current.close();
+                if (currentCallRef.current) {
+                    currentCallRef.current.close();
+                    currentCallRef.current = null;
+                }
             };
 
             const sendFile = (e) => {
@@ -155,40 +200,71 @@
             useEffect(() => {
                 if (myId && showQr && qrRef.current) {
                     qrRef.current.innerHTML = "";
+                    const baseUrl = window.location.href.split('?')[0];
                     new window.QRCode(qrRef.current, {
-                        text: `${window.location.href.split('?')[0]}?join=${myId}`,
-                        width: 150, height: 150
+                        text: `${baseUrl}?join=${myId}`,
+                        width: 180,
+                        height: 180,
+                        colorDark : "#0f172a",
+                        colorLight : "#ffffff",
+                        correctLevel : window.QRCode.CorrectLevel.H
                     });
                 }
             }, [myId, showQr]);
 
             return (
-                <div className="h-screen w-screen flex items-center justify-center bg-slate-950 font-sans select-none overflow-hidden">
-                    <div className="w-full max-w-md bg-slate-900 h-full md:h-[90vh] md:rounded-[2.5rem] flex flex-col relative border-slate-800 border-x">
+                <div className="h-screen w-screen flex items-center justify-center bg-slate-950 font-sans no-select overflow-hidden">
+                    <div className="w-full max-w-md bg-slate-900 h-full md:h-[90vh] md:rounded-[2.5rem] flex flex-col relative border-slate-800 border-x shadow-2xl">
                         
                         {/* Header */}
-                        <div className="p-6 bg-slate-900 border-b border-slate-800">
+                        <div className="p-6 bg-slate-900 border-b border-slate-800 shrink-0">
                             <div className="flex justify-between items-center mb-4">
                                 <h1 className="text-sm font-black text-indigo-500 uppercase tracking-widest flex items-center gap-2">
-                                    <Icon name="zap" size={18} className="fill-current" /> HUB MERKEZİ
+                                    <Icon name="zap" size={18} className="text-yellow-400" /> HUB MERKEZİ
                                 </h1>
-                                <button onClick={() => setShowQr(!showQr)} className="p-2 bg-indigo-600 rounded-xl">
-                                    <Icon name="qr-code" size={18} className="text-white" />
+                                <button 
+                                    onClick={() => setShowQr(!showQr)} 
+                                    className={`p-2 rounded-xl transition-all ${showQr ? 'bg-red-500/20 text-red-500' : 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20'}`}
+                                >
+                                    <Icon name={showQr ? "x" : "qr-code"} size={18} />
                                 </button>
                             </div>
                             <div className="bg-slate-950 p-3 rounded-2xl flex items-center justify-between border border-slate-800">
-                                <div>
+                                <div className="overflow-hidden">
                                     <p className="text-[9px] text-slate-500 font-bold uppercase">Kimliğiniz</p>
-                                    <p className="text-xl font-mono font-black text-white">{myId || "..."}</p>
+                                    <p className="text-xl font-mono font-black text-white truncate">{myId || "Yükleniyor..."}</p>
                                 </div>
-                                <button onClick={() => navigator.clipboard.writeText(myId)} className="text-slate-600">
+                                <button 
+                                    onClick={() => {
+                                        navigator.clipboard.writeText(myId);
+                                    }} 
+                                    className="text-slate-600 hover:text-indigo-400 p-2 transition-colors"
+                                >
                                     <Icon name="copy" size={16} />
                                 </button>
                             </div>
                         </div>
 
+                        {/* QR Modal (Inline) */}
+                        {showQr && (
+                            <div className="absolute inset-0 z-50 bg-slate-950/95 flex items-center justify-center p-8 animate-in fade-in duration-200">
+                                <div className="bg-white p-8 rounded-[2.5rem] text-center w-full max-w-[280px] shadow-2xl border-4 border-indigo-500/20">
+                                    <div className="flex justify-between items-center mb-6 text-slate-900 font-black text-sm uppercase">
+                                        <span>HIZLI EŞLEŞTİR</span>
+                                        <button onClick={()=>setShowQr(false)} className="text-slate-300 hover:text-red-500 transition-colors">
+                                            <Icon name="x-circle" size={24}/>
+                                        </button>
+                                    </div>
+                                    <div className="flex justify-center mb-6 bg-white p-2 rounded-xl overflow-hidden">
+                                        <div ref={qrRef}></div>
+                                    </div>
+                                    <p className="text-[10px] text-slate-400 uppercase font-black tracking-tight">Kamerayı koda doğrultun</p>
+                                </div>
+                            </div>
+                        )}
+
                         {/* Tabs */}
-                        <div className="flex p-2 bg-slate-950/30 gap-1 border-b border-slate-800">
+                        <div className="flex p-2 bg-slate-950/30 gap-1 border-b border-slate-800 shrink-0">
                             {[
                                 { id: 'transfer', icon: 'file-up', label: 'Dosya' },
                                 { id: 'chat', icon: 'message-square', label: 'Mesaj' },
@@ -197,7 +273,7 @@
                                 <button 
                                     key={tab.id}
                                     onClick={() => setActiveTab(tab.id)}
-                                    className={`flex-1 flex flex-col items-center gap-1 py-3 rounded-2xl transition-all font-bold text-[10px] uppercase ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-600'}`}
+                                    className={`flex-1 flex flex-col items-center gap-1 py-3 rounded-2xl transition-all font-bold text-[10px] uppercase tracking-tighter ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-600 hover:bg-slate-800/50'}`}
                                 >
                                     <Icon name={tab.icon} size={18} />
                                     {tab.label}
@@ -205,46 +281,65 @@
                             ))}
                         </div>
 
-                        {/* Main */}
+                        {/* Content Area */}
                         <div className="flex-1 overflow-y-auto p-6 relative">
-                            {showQr && (
-                                <div className="absolute inset-0 z-50 bg-slate-950/95 flex items-center justify-center p-8 animate-in fade-in">
-                                    <div className="bg-white p-6 rounded-[2rem] text-center w-full">
-                                        <div className="flex justify-between mb-4 text-slate-900 font-bold">EŞLEŞTİR <button onClick={()=>setShowQr(false)}><Icon name="x" size={20}/></button></div>
-                                        <div ref={qrRef} className="flex justify-center mb-4"></div>
-                                        <p className="text-[10px] text-slate-400 uppercase font-black">Telefon kamerasıyla taratın</p>
+                            {!connection && transferStatus !== 'connecting' ? (
+                                <div className="h-full flex flex-col items-center justify-center space-y-8 animate-in fade-in duration-500">
+                                    <div className="w-24 h-24 bg-slate-800 rounded-[2.5rem] flex items-center justify-center border border-slate-700 shadow-xl relative overflow-hidden group">
+                                        <div className="absolute inset-0 bg-indigo-500/10 group-hover:bg-indigo-500/20 transition-colors"></div>
+                                        <Icon name="monitor" size={48} className="text-slate-500 group-hover:text-indigo-400 transition-colors" />
+                                    </div>
+                                    <div className="w-full space-y-4">
+                                        <div className="text-center">
+                                            <h3 className="font-black text-white text-lg uppercase tracking-tighter">Bağlantı Kur</h3>
+                                            <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">Hedef cihazın kodunu girin</p>
+                                        </div>
+                                        <input 
+                                            value={remoteId} 
+                                            onChange={(e)=>setRemoteId(e.target.value.toUpperCase())}
+                                            placeholder="HEDEF KOD" 
+                                            className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-center font-mono font-black text-2xl text-indigo-400 outline-none focus:border-indigo-500 transition-all placeholder:text-slate-800" 
+                                        />
+                                        <button 
+                                            onClick={connectToPeer} 
+                                            className="w-full bg-indigo-600 py-4 rounded-2xl font-black uppercase text-sm tracking-widest active:scale-95 transition-all shadow-xl shadow-indigo-600/10 hover:bg-indigo-500 text-white"
+                                        >
+                                            Sisteme Bağlan
+                                        </button>
                                     </div>
                                 </div>
-                            )}
-
-                            {!connection && transferStatus !== 'connecting' ? (
-                                <div className="h-full flex flex-col items-center justify-center space-y-6">
-                                    <Icon name="monitor" size={48} className="text-slate-700" />
-                                    <input 
-                                        value={remoteId} 
-                                        onChange={(e)=>setRemoteId(e.target.value.toUpperCase())}
-                                        placeholder="HEDEF KOD" 
-                                        className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-center font-mono font-black text-xl text-indigo-400 outline-none" 
-                                    />
-                                    <button onClick={connectToPeer} className="w-full bg-indigo-600 py-4 rounded-2xl font-black uppercase text-sm tracking-widest active:scale-95 transition-all">Bağlan</button>
-                                </div>
                             ) : (
-                                <div className="h-full">
+                                <div className="h-full animate-in fade-in duration-300">
                                     {activeTab === 'transfer' && (
                                         <div className="h-full flex flex-col justify-center space-y-6">
-                                            <div className="bg-slate-950/50 border-2 border-dashed border-slate-800 rounded-[2rem] p-8 text-center">
+                                            <div className="bg-slate-950/50 border-2 border-dashed border-slate-800 rounded-[2.5rem] p-8 text-center relative overflow-hidden">
                                                 {transferStatus === 'completed' && receivedFile ? (
-                                                    <div className="space-y-4">
-                                                        <Icon name="check-circle" size={48} className="text-green-500 mx-auto" />
-                                                        <p className="font-black text-sm text-white truncate px-4">{receivedFile.name}</p>
-                                                        <a href={receivedFile.url} download={receivedFile.name} className="block w-full bg-green-600 py-4 rounded-2xl font-black text-xs uppercase shadow-lg shadow-green-900/40 text-white">Kaydet</a>
+                                                    <div className="space-y-6 animate-in zoom-in duration-300">
+                                                        <Icon name="check-circle" size={64} className="text-green-500 mx-auto" />
+                                                        <div className="space-y-1">
+                                                            <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Dosya Alındı</p>
+                                                            <p className="font-black text-sm text-white truncate px-4">{receivedFile.name}</p>
+                                                        </div>
+                                                        <a href={receivedFile.url} download={receivedFile.name} className="block w-full bg-green-600 py-4 rounded-2xl font-black text-xs uppercase shadow-lg shadow-green-900/40 text-white hover:bg-green-500 transition-colors">Cihaza Kaydet</a>
+                                                        <button onClick={() => {setReceivedFile(null); setTransferStatus('connected');}} className="text-[10px] text-slate-600 font-black uppercase underline tracking-widest hover:text-slate-400 transition-colors">Yeni Transfer</button>
                                                     </div>
                                                 ) : (
-                                                    <div className="space-y-4">
-                                                        <Icon name="file-up" size={48} className="text-indigo-500 mx-auto" />
-                                                        <p className="text-xs text-slate-500 font-bold">"Müdürüm, dosya aktarımı hazır."</p>
+                                                    <div className="space-y-6">
+                                                        <Icon name="file-up" size={64} className="text-indigo-500 mx-auto opacity-50" />
+                                                        <p className="text-xs text-slate-500 font-bold px-4">"Müdürüm, güvenli hat üzerinden dosya aktarımı için hazırız."</p>
                                                         <input type="file" onChange={sendFile} className="hidden" ref={fileInputRef} />
-                                                        <button onClick={() => fileInputRef.current.click()} className="bg-indigo-600 px-8 py-3 rounded-2xl font-black text-xs uppercase text-white">Dosya Seç</button>
+                                                        <button 
+                                                            onClick={() => fileInputRef.current.click()} 
+                                                            className="bg-indigo-600 px-10 py-4 rounded-2xl font-black text-xs uppercase text-white shadow-xl shadow-indigo-600/20 hover:bg-indigo-500 transition-all"
+                                                        >
+                                                            Dosya Gönder
+                                                        </button>
+                                                    </div>
+                                                )}
+                                                {transferStatus === 'sending' && (
+                                                    <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-center p-8 space-y-4">
+                                                        <Icon name="refresh-cw" size={48} className="text-indigo-400 animate-spin" />
+                                                        <p className="text-xs font-black text-white uppercase tracking-widest">Dosya Sızdırılıyor...</p>
                                                     </div>
                                                 )}
                                             </div>
@@ -253,36 +348,60 @@
                                     {activeTab === 'chat' && (
                                         <div className="h-full flex flex-col">
                                             <div className="flex-1 space-y-4 mb-4 overflow-y-auto pr-1">
-                                                {messages.map((m, i) => (
-                                                    <div key={i} className={`flex flex-col ${m.sender === 'me' ? 'items-end' : 'items-start'}`}>
-                                                        <div className={`max-w-[85%] p-3 rounded-2xl text-sm ${m.sender === 'me' ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-slate-800 text-slate-200 rounded-tl-none'}`}>
+                                                {messages.length === 0 && (
+                                                    <div className="h-full flex flex-col items-center justify-center opacity-20 grayscale">
+                                                        <Icon name="message-square" size={40} />
+                                                        <p className="text-[10px] font-black uppercase mt-2">Mesaj Yok</p>
+                                                    </div>
+                                                )}
+                                                {messages.map((m) => (
+                                                    <div key={m.id} className={`flex flex-col ${m.sender === 'me' ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-2 duration-200`}>
+                                                        <div className={`max-w-[85%] p-4 rounded-3xl text-sm font-medium leading-relaxed ${m.sender === 'me' ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-slate-800 text-slate-200 rounded-tl-none border border-slate-700'}`}>
                                                             {m.text}
                                                         </div>
-                                                        <span className="text-[8px] text-slate-600 mt-1 uppercase font-black">{m.time}</span>
+                                                        <span className="text-[8px] text-slate-600 mt-1 uppercase font-black tracking-widest">{m.time}</span>
                                                     </div>
                                                 ))}
                                                 <div ref={chatEndRef} />
                                             </div>
-                                            <div className="flex gap-2">
-                                                <input value={inputText} onChange={(e)=>setInputText(e.target.value)} onKeyPress={(e)=>e.key === 'Enter' && sendMessage()} placeholder="Mesaj..." className="flex-1 bg-slate-950 border border-slate-800 rounded-2xl p-4 text-xs font-bold outline-none text-white" />
-                                                <button onClick={sendMessage} className="bg-indigo-600 p-4 rounded-2xl"><Icon name="send" size={20} className="text-white"/></button>
+                                            <div className="flex gap-2 bg-slate-950 p-2 rounded-[2rem] border border-slate-800">
+                                                <input 
+                                                    value={inputText} 
+                                                    onChange={(e)=>setInputText(e.target.value)} 
+                                                    onKeyPress={(e)=>e.key === 'Enter' && sendMessage()} 
+                                                    placeholder="MESAJINIZI YAZIN..." 
+                                                    className="flex-1 bg-transparent border-none rounded-2xl px-4 py-2 text-xs font-bold outline-none text-white placeholder:text-slate-700" 
+                                                />
+                                                <button onClick={sendMessage} className="bg-indigo-600 p-3 rounded-full text-white shadow-lg shadow-indigo-600/20 active:scale-90 transition-transform">
+                                                    <Icon name="send" size={20} />
+                                                </button>
                                             </div>
                                         </div>
                                     )}
                                     {activeTab === 'radio' && (
-                                        <div className="h-full flex flex-col items-center justify-center space-y-10">
+                                        <div className="h-full flex flex-col items-center justify-center space-y-12">
                                             <div className="relative">
-                                                <div className={`absolute -inset-10 bg-red-500 rounded-full blur-3xl opacity-20 transition-all duration-300 ${isTalking ? 'opacity-50 scale-125' : 'scale-50'}`}></div>
+                                                <div className={`absolute -inset-16 bg-red-500 rounded-full blur-[60px] transition-all duration-500 ${isTalking ? 'opacity-40 scale-150' : 'opacity-0 scale-50'}`}></div>
                                                 <button 
-                                                    onMouseDown={startTalking} onMouseUp={stopTalking} onTouchStart={startTalking} onTouchEnd={stopTalking}
-                                                    className={`relative w-40 h-40 rounded-full flex flex-col items-center justify-center gap-2 border-4 touch-none transition-all active:scale-95 ${isTalking ? 'bg-red-600 border-red-400' : 'bg-slate-800 border-slate-700'}`}
+                                                    onMouseDown={startTalking} 
+                                                    onMouseUp={stopTalking} 
+                                                    onMouseLeave={stopTalking}
+                                                    onTouchStart={startTalking} 
+                                                    onTouchEnd={stopTalking}
+                                                    className={`relative w-48 h-48 rounded-full flex flex-col items-center justify-center gap-3 border-8 transition-all active:scale-90 touch-none ${isTalking ? 'bg-red-600 border-red-400 shadow-[0_0_50px_rgba(239,68,68,0.4)]' : 'bg-slate-800 border-slate-700 shadow-2xl shadow-black/50 hover:bg-slate-700'}`}
                                                 >
-                                                    <Icon name={isTalking ? 'mic' : 'mic-off'} size={48} className={isTalking ? 'animate-pulse text-white' : 'text-slate-500'} />
-                                                    <span className="text-[10px] font-black text-white">{isTalking ? "YAYINDASIN" : "BAS KONUŞ"}</span>
+                                                    <Icon name={isTalking ? 'mic' : 'mic-off'} size={56} className={isTalking ? 'animate-pulse text-white' : 'text-slate-600'} />
+                                                    <span className="text-[11px] font-black text-white tracking-[0.2em]">{isTalking ? "YAYINDASIN" : "BAS KONUŞ"}</span>
                                                 </button>
                                             </div>
                                             <audio ref={remoteAudioRef} autoPlay />
-                                            <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Kriptolu Ses Hattı Aktif</p>
+                                            <div className="text-center space-y-1">
+                                                <p className="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em]">Güvenli Ses Hattı</p>
+                                                <div className="flex items-center justify-center gap-2">
+                                                    <div className={`w-1.5 h-1.5 rounded-full ${connection ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
+                                                    <p className="text-xs font-bold text-slate-400">{connection ? 'OPERASYON AKTİF' : 'BAĞLANTI BEKLENİYOR'}</p>
+                                                </div>
+                                            </div>
                                         </div>
                                     )}
                                 </div>
@@ -290,9 +409,12 @@
                         </div>
 
                         {/* Footer */}
-                        <div className="p-4 bg-slate-950 flex justify-between items-center px-10 border-t border-slate-800 safe-bottom">
-                            <span className="text-[9px] font-black text-slate-700 uppercase">Secure Node P2P</span>
-                            <span className="text-[9px] font-black text-indigo-900 uppercase">Müdürüm Pro v3.0</span>
+                        <div className="p-4 bg-slate-950 flex justify-between items-center px-10 border-t border-slate-800 shrink-0 safe-bottom">
+                            <div className="flex items-center gap-2 opacity-30">
+                                <Icon name="shield-check" size={12} className="text-indigo-500" />
+                                <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">P2P NODE ACTIVE</span>
+                            </div>
+                            <span className="text-[9px] font-black text-indigo-900 uppercase tracking-tighter">Müdürüm Hub v3.1</span>
                         </div>
                     </div>
                 </div>
@@ -304,4 +426,3 @@
     </script>
 </body>
 </html>
-
