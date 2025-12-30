@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>Müdürüm Hub - Pro V6.4</title>
+    <title>Müdürüm Hub - Pro V6.5</title>
     
     <!-- Kütüphaneler -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -65,9 +65,10 @@
             const [activeTab, setActiveTab] = useState('transfer'); 
             const [messages, setMessages] = useState([]);
             const [inputText, setInputText] = useState('');
-            const [transferStatus, setTransferStatus] = useState('idle');
+            const [transferStatus, setTransferStatus] = useState('idle'); // idle, connected, sending, receiving, completed, delivered
             const [transferProgress, setTransferProgress] = useState(0);
             const [receivedFile, setReceivedFile] = useState(null);
+            const [sentFileName, setSentFileName] = useState('');
             const [showQr, setShowQr] = useState(false);
             const [pairedDevices, setPairedDevices] = useState([]);
             const [toast, setToast] = useState({ show: false, message: '' });
@@ -84,7 +85,6 @@
             const chatEndRef = useRef(null);
             const typingTimeoutRef = useRef(null);
             
-            // Mikrofon ve Kayıt için Referanslar
             const mediaRecorderRef = useRef(null);
             const streamRef = useRef(null);
             const audioChunksRef = useRef([]);
@@ -147,6 +147,7 @@
 
                 conn.on('data', (data) => {
                     const expiryTime = selfDestruct ? Date.now() + 60000 : null;
+                    
                     if (data.type === 'buzz') {
                         setIsBuzzing(true);
                         if (navigator.vibrate) navigator.vibrate([500, 200, 500]);
@@ -155,16 +156,28 @@
                         showToast("DÜRTÜLDÜNÜZ!");
                     } else if (data.type === 'file-chunk') {
                         const { fileId, fileName, fileType, chunk, totalChunks, currentChunk } = data;
-                        if (!chunkBuffers.current[fileId]) { chunkBuffers.current[fileId] = []; setTransferStatus('receiving'); }
+                        if (!chunkBuffers.current[fileId]) { 
+                            chunkBuffers.current[fileId] = []; 
+                            setTransferStatus('receiving'); 
+                            setReceivedFile(null);
+                        }
                         chunkBuffers.current[fileId][currentChunk] = chunk;
                         setTransferProgress(Math.round(((currentChunk + 1) / totalChunks) * 100));
+                        
                         if (chunkBuffers.current[fileId].length === totalChunks) {
                             const blob = new Blob(chunkBuffers.current[fileId], { type: fileType });
                             setReceivedFile({ url: URL.createObjectURL(blob), name: fileName, type: fileType });
                             setTransferStatus('completed');
                             delete chunkBuffers.current[fileId];
+                            // Gönderene "aldım" onayı gönder
+                            conn.send({ type: 'file-delivered', fileId });
+                            if (navigator.vibrate) navigator.vibrate(200);
                             showToast("Dosya Alındı!");
                         }
+                    } else if (data.type === 'file-delivered') {
+                        // Gönderen kişi bu mesajı alır
+                        setTransferStatus('delivered');
+                        showToast("Dosya Karşıya Ulaştı!");
                     } else if (data.type === 'chat' || data.type === 'voice-note') {
                         setIsRemoteTyping(false);
                         setMessages(prev => [...prev, { id: Date.now(), sender: 'other', text: data.text, audio: data.audio, time: new Date().toLocaleTimeString(), expiry: expiryTime }]);
@@ -208,18 +221,13 @@
                 return () => { if (newPeer) newPeer.destroy(); };
             }, []);
 
-            // --- SES KAYIT DÜZELTMESİ (Müdürüm Özel) ---
             const startRecording = async () => {
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     streamRef.current = stream;
                     mediaRecorderRef.current = new MediaRecorder(stream);
                     audioChunksRef.current = [];
-                    
-                    mediaRecorderRef.current.ondataavailable = (e) => {
-                        if (e.data.size > 0) audioChunksRef.current.push(e.data);
-                    };
-                    
+                    mediaRecorderRef.current.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
                     mediaRecorderRef.current.onstop = async () => {
                         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
                         const reader = new FileReader();
@@ -227,41 +235,23 @@
                         reader.onloadend = () => {
                             const base64Audio = reader.result;
                             const expiryTime = selfDestruct ? Date.now() + 60000 : null;
-                            const msg = { id: Date.now(), sender: 'me', audio: base64Audio, time: new Date().toLocaleTimeString(), expiry: expiryTime };
-                            setMessages(prev => [...prev, msg]);
+                            setMessages(prev => [...prev, { id: Date.now(), sender: 'me', audio: base64Audio, time: new Date().toLocaleTimeString(), expiry: expiryTime }]);
                             if (connection) connection.send({ type: 'voice-note', audio: base64Audio });
                         };
-                        // Mikrofonu tamamen kapat
-                        if (streamRef.current) {
-                            streamRef.current.getTracks().forEach(track => track.stop());
-                            streamRef.current = null;
-                        }
+                        if (streamRef.current) { streamRef.current.getTracks().forEach(track => track.stop()); streamRef.current = null; }
                     };
-                    
                     mediaRecorderRef.current.start();
                     setIsRecording(true);
                     playSound(660, 'sine', 0.05);
-                } catch (err) { showToast("Mikrofon Erişilemez!"); }
+                } catch (err) { showToast("Erişim Engellendi!"); }
             };
 
-            const stopRecording = () => {
-                if (mediaRecorderRef.current && isRecording) {
-                    mediaRecorderRef.current.stop();
-                    setIsRecording(false);
-                    playSound(440, 'sine', 0.05);
-                }
-            };
+            const stopRecording = () => { if (mediaRecorderRef.current && isRecording) { mediaRecorderRef.current.stop(); setIsRecording(false); playSound(440, 'sine', 0.05); } };
 
-            const sendBuzz = () => {
-                if (!connection) return;
-                connection.send({ type: 'buzz' });
-                showToast("Dürtme Atıldı");
-                if (navigator.vibrate) navigator.vibrate(200);
-            };
+            const sendBuzz = () => { if (!connection) return; connection.send({ type: 'buzz' }); showToast("Dürtme Atıldı"); if (navigator.vibrate) navigator.vibrate(200); };
 
             const drawOnCanvas = (x, y, isNewPath, isLocal) => {
-                const canvas = canvasRef.current;
-                if (!canvas) return;
+                const canvas = canvasRef.current; if (!canvas) return;
                 const ctx = canvas.getContext('2d');
                 ctx.lineWidth = 3; ctx.lineCap = 'round';
                 ctx.strokeStyle = isLocal ? '#6366f1' : '#f43f5e';
@@ -270,12 +260,10 @@
             };
 
             const handleCanvasInteraction = (e) => {
-                const canvas = canvasRef.current;
-                const rect = canvas.getBoundingClientRect();
+                const canvas = canvasRef.current; const rect = canvas.getBoundingClientRect();
                 const clientX = e.touches ? e.touches[0].clientX : e.clientX;
                 const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-                const x = clientX - rect.left;
-                const y = clientY - rect.top;
+                const x = clientX - rect.left; const y = clientY - rect.top;
                 if (e.type === 'touchstart' || e.type === 'mousedown') drawOnCanvas(x, y, true, true);
                 else if (e.buttons === 1 || e.type === 'touchmove') drawOnCanvas(x, y, false, true);
             };
@@ -296,6 +284,22 @@
                 } else { navigator.clipboard.writeText(shareUrl); showToast("Link Kopyalandı!"); }
             };
 
+            const sendFile = async (e) => {
+                const file = e.target.files[0]; if (!file || !connection) return;
+                setSentFileName(file.name);
+                setTransferStatus('sending');
+                setTransferProgress(0);
+                const chunkSize = 64 * 1024; const totalChunks = Math.ceil(file.size / chunkSize);
+                const fileId = Math.random().toString(36).substring(7);
+                for (let i = 0; i < totalChunks; i++) {
+                    const chunk = file.slice(i * chunkSize, Math.min(file.size, (i + 1) * chunkSize));
+                    connection.send({ type: 'file-chunk', fileId, fileName: file.name, fileType: file.type, chunk: await chunk.arrayBuffer(), totalChunks, currentChunk: i });
+                    setTransferProgress(Math.round(((i + 1) / totalChunks) * 100));
+                    if (i % 12 === 0) await new Promise(r => setTimeout(r, 1));
+                }
+                // Gönderim bitti ama karşı tarafın birleştirmesi bekleniyor (delivered durumu bekleniyor)
+            };
+
             useEffect(() => {
                 if (myId && showQr && qrRef.current) {
                     qrRef.current.innerHTML = "";
@@ -313,7 +317,7 @@
                                 <div className="flex items-center gap-2">
                                     <div className={`w-3 h-3 rounded-full ${connection ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]' : 'bg-slate-700'}`}></div>
                                     <div className="flex flex-col">
-                                        <h1 className="text-[10px] font-black text-indigo-500 uppercase tracking-widest">Hub v6.4 PRO</h1>
+                                        <h1 className="text-[10px] font-black text-indigo-500 uppercase tracking-widest">Hub v6.5 PRO</h1>
                                         <span className="text-[7px] text-slate-500 font-bold uppercase">{connection ? 'HATTAYIZ' : 'SİNYAL BEKLENİYOR'}</span>
                                     </div>
                                 </div>
@@ -379,7 +383,23 @@
                                     <div className={`h-full overflow-y-auto p-6 flex flex-col justify-center space-y-6 text-center ${activeTab === 'transfer' ? 'block' : 'hidden'}`}>
                                         <div className="bg-slate-950/50 border-2 border-dashed border-slate-800 rounded-[2.5rem] p-8 shadow-inner">
                                             {(transferStatus === 'sending' || transferStatus === 'receiving') ? (
-                                                <div className="space-y-6"><div className="text-[2.5rem] font-black text-indigo-500">%{transferProgress}</div><p className="text-[10px] font-black text-indigo-400 animate-pulse uppercase tracking-[0.4em]">VERİ AKIŞI...</p></div>
+                                                <div className="space-y-6">
+                                                    <div className="text-[2.5rem] font-black text-indigo-500">%{transferProgress}</div>
+                                                    <p className="text-[10px] font-black text-indigo-400 animate-pulse uppercase tracking-[0.4em]">
+                                                        {transferStatus === 'sending' ? 'GÖNDERİLİYOR...' : 'ALINIYOR...'}
+                                                    </p>
+                                                </div>
+                                            ) : transferStatus === 'delivered' ? (
+                                                <div className="space-y-6 animate-in zoom-in duration-300">
+                                                    <div className="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto border border-green-500/40">
+                                                        <Icon name="check" size={40} className="text-green-500" />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                        <p className="text-[10px] text-slate-500 font-black uppercase">TESLİMAT BAŞARILI</p>
+                                                        <p className="font-black text-sm text-white truncate px-4">{sentFileName}</p>
+                                                    </div>
+                                                    <button onClick={() => {setTransferStatus('connected'); setReceivedFile(null);}} className="text-[9px] text-slate-600 font-black uppercase underline">TAMAM</button>
+                                                </div>
                                             ) : receivedFile ? (
                                                 <div className="space-y-6 animate-in zoom-in duration-300">
                                                     {receivedFile.type.startsWith('image/') && <img src={receivedFile.url} className="w-full h-40 object-contain rounded-2xl bg-black" />}
@@ -391,21 +411,7 @@
                                             ) : (
                                                 <div className="space-y-6">
                                                     <Icon name="file-up" size={56} className="text-indigo-500/20 mx-auto" />
-                                                    <input type="file" onChange={(e) => {
-                                                        const file = e.target.files[0]; if (!file || !connection) return;
-                                                        setTransferStatus('sending');
-                                                        (async () => {
-                                                            const chunkSize = 64 * 1024; const totalChunks = Math.ceil(file.size / chunkSize);
-                                                            const fileId = Math.random().toString(36).substring(7);
-                                                            for (let i = 0; i < totalChunks; i++) {
-                                                                const chunk = file.slice(i * chunkSize, Math.min(file.size, (i + 1) * chunkSize));
-                                                                connection.send({ type: 'file-chunk', fileId, fileName: file.name, fileType: file.type, chunk: await chunk.arrayBuffer(), totalChunks, currentChunk: i });
-                                                                setTransferProgress(Math.round(((i + 1) / totalChunks) * 100));
-                                                                if (i % 12 === 0) await new Promise(r => setTimeout(r, 1));
-                                                            }
-                                                            setTransferStatus('completed');
-                                                        })();
-                                                    }} className="hidden" ref={fileInputRef} />
+                                                    <input type="file" onChange={sendFile} className="hidden" ref={fileInputRef} />
                                                     <button onClick={() => fileInputRef.current.click()} className="bg-indigo-600 px-10 py-4 rounded-2xl font-black text-xs text-white uppercase">DOSYA SEÇ</button>
                                                 </div>
                                             )}
@@ -437,15 +443,7 @@
                                         <div className="flex gap-2 items-center">
                                             <button onClick={sendBuzz} className="p-3 bg-red-500/20 text-red-500 rounded-2xl active:scale-90"><Icon name="bell" size={20} /></button>
                                             <div className="flex-1 flex gap-2 p-2 bg-slate-950 rounded-[3rem] border border-slate-800">
-                                                <button 
-                                                    onMouseDown={startRecording} 
-                                                    onMouseUp={stopRecording} 
-                                                    onTouchStart={startRecording} 
-                                                    onTouchEnd={stopRecording} 
-                                                    className={`p-2 rounded-full transition-all ${isRecording ? 'bg-red-600 text-white scale-110 animate-pulse' : 'text-slate-500 hover:text-indigo-400'}`}
-                                                >
-                                                    <Icon name="mic" size={20} />
-                                                </button>
+                                                <button onMouseDown={startRecording} onMouseUp={stopRecording} onTouchStart={startRecording} onTouchEnd={stopRecording} className={`p-2 rounded-full transition-all ${isRecording ? 'bg-red-500 text-white scale-110 animate-pulse' : 'text-slate-500'}`}><Icon name="mic" size={20} /></button>
                                                 <input value={inputText} onChange={(e)=>{setInputText(e.target.value); if(connection) connection.send({type:'typing',status:true}); clearTimeout(typingTimeoutRef.current); typingTimeoutRef.current=setTimeout(()=>connection.send({type:'typing',status:false}),2000)}} onKeyPress={(e)=>e.key === 'Enter' && sendMessage()} placeholder={isRecording ? "Kaydediliyor..." : "MESAJ..."} className="flex-1 bg-transparent px-2 text-[10px] font-bold outline-none text-white uppercase placeholder:text-slate-800" />
                                                 <button onClick={sendMessage} className="bg-indigo-600 p-3 rounded-full text-white active:scale-90 transition-transform"><Icon name="send" size={18} /></button>
                                             </div>
@@ -458,7 +456,7 @@
                         {toast.show && <div className="absolute bottom-24 left-1/2 -translate-x-1/2 bg-indigo-600 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase shadow-2xl z-[100] toast-active">{toast.message}</div>}
 
                         <div className="p-4 bg-slate-950 flex justify-between items-center px-10 border-t border-slate-800 shrink-0 safe-bottom">
-                            <span className="text-[8px] font-black text-slate-800 uppercase italic tracking-widest">Mic Fix Update v6.4</span>
+                            <span className="text-[8px] font-black text-slate-800 uppercase italic tracking-widest">Delivery Report Node v6.5</span>
                             <span className="text-[9px] font-black text-indigo-950 uppercase italic tracking-tighter">MÜDÜRÜM PRO</span>
                         </div>
                     </div>
