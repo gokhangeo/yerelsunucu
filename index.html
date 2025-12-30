@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>Müdürüm Hub - Pro V6.0</title>
+    <title>Müdürüm Hub - Pro V6.2</title>
     
     <!-- Kütüphaneler -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -25,15 +25,21 @@
         .fade-in { animation: fadeIn 0.3s ease-in; }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-        /* Yazıyor animasyonu */
         .typing-dot { animation: typing 1.4s infinite; }
         .typing-dot:nth-child(2) { animation-delay: 0.2s; }
         .typing-dot:nth-child(3) { animation-delay: 0.4s; }
         @keyframes typing { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
 
-        /* Çizim Tahtası */
-        canvas { touch-action: none; cursor: crosshair; }
+        canvas { touch-action: none; cursor: crosshair; background-color: #020617; }
         .toast-active { transform: translateY(0); opacity: 1; transition: all 0.3s ease-out; }
+        
+        /* Buzz Animasyonu */
+        .buzz-shake { animation: shake 0.5s cubic-bezier(.36,.07,.19,.97) both; }
+        @keyframes shake { 10%, 90% { transform: translate3d(-1px, 0, 0); } 20%, 80% { transform: translate3d(2px, 0, 0); } 30%, 50%, 70% { transform: translate3d(-4px, 0, 0); } 40%, 60% { transform: translate3d(4px, 0, 0); } }
+
+        /* Kendi kendini imha progress */
+        .destruct-timer { height: 2px; background: #ef4444; animation: shrink 60s linear forwards; }
+        @keyframes shrink { from { width: 100%; } to { width: 0%; } }
     </style>
 </head>
 <body>
@@ -67,17 +73,21 @@
             const [showQr, setShowQr] = useState(false);
             const [pairedDevices, setPairedDevices] = useState([]);
             const [toast, setToast] = useState({ show: false, message: '' });
-
-            // Yeni Bildirim ve Yazıyor State'leri
+            
+            // Yeni State'ler
             const [isRemoteTyping, setIsRemoteTyping] = useState(false);
             const [unreadCounts, setUnreadCounts] = useState({ chat: 0, sketch: 0 });
+            const [isBuzzing, setIsBuzzing] = useState(false);
+            const [isRecording, setIsRecording] = useState(false);
+            const [selfDestruct, setSelfDestruct] = useState(false);
             
             const canvasRef = useRef(null);
             const fileInputRef = useRef(null);
             const qrRef = useRef(null);
             const chatEndRef = useRef(null);
             const typingTimeoutRef = useRef(null);
-            
+            const mediaRecorderRef = useRef(null);
+            const audioChunksRef = useRef([]);
             const chunkBuffers = useRef({});
 
             const showToast = (msg) => {
@@ -85,7 +95,31 @@
                 setTimeout(() => setToast({ show: false, message: '' }), 3000);
             };
 
-            // Sekme değişince unread sayısını sıfırla
+            // Ses Çalma Fonksiyonu (Buzz ve Kayıt için)
+            const playSound = (freq, type = 'sine', duration = 0.2) => {
+                try {
+                    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = type;
+                    osc.frequency.setValueAtTime(freq, ctx.currentTime);
+                    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start();
+                    osc.stop(ctx.currentTime + duration);
+                } catch(e) {}
+            };
+
+            // Kendi Kendini İmha Temizliği (Her 5 saniyede bir kontrol)
+            useEffect(() => {
+                const interval = setInterval(() => {
+                    const now = Date.now();
+                    setMessages(prev => prev.filter(m => !m.expiry || m.expiry > now));
+                }, 5000);
+                return () => clearInterval(interval);
+            }, []);
+
             useEffect(() => {
                 if (activeTab === 'chat') setUnreadCounts(prev => ({ ...prev, chat: 0 }));
                 if (activeTab === 'sketch') setUnreadCounts(prev => ({ ...prev, sketch: 0 }));
@@ -99,33 +133,36 @@
                     setRemoteId(conn.peer);
                     showToast("Bağlantı Aktif!");
                     setPairedDevices(prev => {
-                        if (!prev.includes(conn.peer)) {
-                            const updated = [conn.peer, ...prev].slice(0, 5);
-                            localStorage.setItem('mudurum_paired_devices', JSON.stringify(updated));
-                            return updated;
-                        }
-                        return prev;
+                        const updated = [conn.peer, ...prev.filter(id => id !== conn.peer)].slice(0, 5);
+                        localStorage.setItem('mudurum_paired_devices', JSON.stringify(updated));
+                        return updated;
                     });
                 });
 
                 conn.on('data', (data) => {
-                    if (data.type === 'file-chunk') {
+                    const expiryTime = selfDestruct ? Date.now() + 60000 : null;
+
+                    if (data.type === 'buzz') {
+                        setIsBuzzing(true);
+                        if (navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 500]);
+                        playSound(440, 'square', 1);
+                        setTimeout(() => setIsBuzzing(false), 2000);
+                        showToast("DÜRTÜLDÜNÜZ!");
+                    } else if (data.type === 'file-chunk') {
                         const { fileId, fileName, fileType, chunk, totalChunks, currentChunk } = data;
                         if (!chunkBuffers.current[fileId]) { chunkBuffers.current[fileId] = []; setTransferStatus('receiving'); }
                         chunkBuffers.current[fileId][currentChunk] = chunk;
                         setTransferProgress(Math.round(((currentChunk + 1) / totalChunks) * 100));
-
                         if (chunkBuffers.current[fileId].length === totalChunks) {
                             const blob = new Blob(chunkBuffers.current[fileId], { type: fileType });
                             setReceivedFile({ url: URL.createObjectURL(blob), name: fileName, type: fileType });
                             setTransferStatus('completed');
                             delete chunkBuffers.current[fileId];
-                            if (navigator.vibrate) navigator.vibrate(200);
                             showToast("Dosya Alındı!");
                         }
-                    } else if (data.type === 'chat') {
+                    } else if (data.type === 'chat' || data.type === 'voice-note') {
                         setIsRemoteTyping(false);
-                        setMessages(prev => [...prev, { id: Date.now(), sender: 'other', text: data.text, time: new Date().toLocaleTimeString() }]);
+                        setMessages(prev => [...prev, { id: Date.now(), sender: 'other', text: data.text, audio: data.audio, time: new Date().toLocaleTimeString(), expiry: expiryTime }]);
                         if (activeTab !== 'chat') setUnreadCounts(prev => ({ ...prev, chat: prev.chat + 1 }));
                     } else if (data.type === 'typing') {
                         setIsRemoteTyping(data.status);
@@ -141,115 +178,110 @@
             };
 
             useEffect(() => {
-                const urlParams = new URLSearchParams(window.location.search);
-                const joinId = urlParams.get('join');
-                let savedId = localStorage.getItem('mudurum_hub_id');
-                if (!savedId) {
-                    savedId = "MDR-" + Math.random().toString(36).substring(2, 6).toUpperCase();
-                    localStorage.setItem('mudurum_hub_id', savedId);
-                }
+                let savedId = localStorage.getItem('mudurum_hub_id') || "MDR-" + Math.random().toString(36).substring(2, 6).toUpperCase();
+                localStorage.setItem('mudurum_hub_id', savedId);
                 setMyId(savedId);
                 setPairedDevices(JSON.parse(localStorage.getItem('mudurum_paired_devices') || '[]'));
 
-                const newPeer = new window.Peer(savedId, {
-                    config: { 'iceServers': [{ url: 'stun:stun.l.google.com:19302' }] }
-                });
-                newPeer.on('open', () => {
-                    setPeer(newPeer);
-                    if (joinId && joinId !== savedId) { setRemoteId(joinId); setTransferStatus('connecting'); setupConnection(newPeer.connect(joinId, { reliable: true })); }
-                });
+                const newPeer = new window.Peer(savedId, { config: { 'iceServers': [{ url: 'stun:stun.l.google.com:19302' }] } });
+                newPeer.on('open', () => setPeer(newPeer));
                 newPeer.on('connection', setupConnection);
+                
+                const urlParams = new URLSearchParams(window.location.search);
+                const joinId = urlParams.get('join');
+                if (joinId && joinId !== savedId) {
+                    setTimeout(() => {
+                        const conn = newPeer.connect(joinId, { reliable: true });
+                        setupConnection(conn);
+                    }, 1000);
+                }
+
                 return () => { if (newPeer) newPeer.destroy(); };
             }, []);
+
+            // --- Ses Kayıt Mantığı ---
+            const startRecording = async () => {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    mediaRecorderRef.current = new MediaRecorder(stream);
+                    audioChunksRef.current = [];
+                    mediaRecorderRef.current.ondataavailable = (e) => audioChunksRef.current.push(e.data);
+                    mediaRecorderRef.current.onstop = async () => {
+                        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+                        const reader = new FileReader();
+                        reader.readAsDataURL(audioBlob);
+                        reader.onloadend = () => {
+                            const base64Audio = reader.result;
+                            const expiryTime = selfDestruct ? Date.now() + 60000 : null;
+                            const msg = { id: Date.now(), sender: 'me', audio: base64Audio, time: new Date().toLocaleTimeString(), expiry: expiryTime };
+                            setMessages(prev => [...prev, msg]);
+                            if (connection) connection.send({ type: 'voice-note', audio: base64Audio });
+                        };
+                    };
+                    mediaRecorderRef.current.start();
+                    setIsRecording(true);
+                    playSound(660, 'sine', 0.1);
+                } catch (err) { showToast("Mikrofon İzni Gerekli!"); }
+            };
+
+            const stopRecording = () => {
+                if (mediaRecorderRef.current && isRecording) {
+                    mediaRecorderRef.current.stop();
+                    setIsRecording(false);
+                    playSound(440, 'sine', 0.1);
+                }
+            };
+
+            const sendBuzz = () => {
+                if (!connection) return;
+                connection.send({ type: 'buzz' });
+                showToast("Dürtme Gönderildi");
+                if (navigator.vibrate) navigator.vibrate(200);
+            };
 
             // --- Çizim Mantığı ---
             const drawOnCanvas = (x, y, isNewPath, isLocal) => {
                 const canvas = canvasRef.current;
                 if (!canvas) return;
                 const ctx = canvas.getContext('2d');
-                ctx.lineWidth = 3;
-                ctx.lineCap = 'round';
+                ctx.lineWidth = 3; ctx.lineCap = 'round';
                 ctx.strokeStyle = isLocal ? '#6366f1' : '#f43f5e';
-
-                if (isNewPath) {
-                    ctx.beginPath();
-                    ctx.moveTo(x, y);
-                } else {
-                    ctx.lineTo(x, y);
-                    ctx.stroke();
-                }
-
-                if (isLocal && connection) {
-                    connection.send({ type: 'draw', x, y, isNewPath });
-                }
+                if (isNewPath) { ctx.beginPath(); ctx.moveTo(x, y); } else { ctx.lineTo(x, y); ctx.stroke(); }
+                if (isLocal && connection) connection.send({ type: 'draw', x, y, isNewPath });
             };
 
             const clearLocalCanvas = () => {
                 const canvas = canvasRef.current;
                 if (!canvas) return;
-                const ctx = canvas.getContext('2d');
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
             };
 
-            const handleClear = () => {
-                clearLocalCanvas();
-                if (connection) connection.send({ type: 'clear-canvas' });
-            };
-
-            const handleCanvasTouch = (e) => {
+            const handleCanvasInteraction = (e) => {
                 const canvas = canvasRef.current;
                 const rect = canvas.getBoundingClientRect();
-                const touch = e.touches[0];
-                const x = touch.clientX - rect.left;
-                const y = touch.clientY - rect.top;
-                if (e.type === 'touchstart') drawOnCanvas(x, y, true, true);
-                else drawOnCanvas(x, y, false, true);
-            };
-
-            const handleCanvasMouse = (e) => {
-                if (e.buttons !== 1) return;
-                const canvas = canvasRef.current;
-                const rect = canvas.getBoundingClientRect();
-                const x = e.clientX - rect.left;
-                const y = e.clientY - rect.top;
-                if (e.type === 'mousedown') drawOnCanvas(x, y, true, true);
-                else drawOnCanvas(x, y, false, true);
-            };
-
-            const shareLink = async () => {
-                const shareUrl = `${window.location.origin}${window.location.pathname}?join=${myId}`;
-                if (navigator.share && /Android|iPhone|iPad/i.test(navigator.userAgent)) {
-                    try { await navigator.share({ title: 'Hub Pro', text: `Operasyon Bağlantısı: ${myId}`, url: shareUrl }); } catch (err) { copyToClipboard(shareUrl); }
-                } else { copyToClipboard(shareUrl); }
-            };
-
-            const copyToClipboard = (text) => {
-                navigator.clipboard.writeText(text).then(() => showToast("Kopyalandı!"));
-            };
-
-            // Yazıyor durumu gönderimi
-            const handleInputChange = (e) => {
-                setInputText(e.target.value);
-                if (connection) {
-                    connection.send({ type: 'typing', status: true });
-                    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-                    typingTimeoutRef.current = setTimeout(() => {
-                        connection.send({ type: 'typing', status: false });
-                    }, 2000);
-                }
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                const x = clientX - rect.left;
+                const y = clientY - rect.top;
+                if (e.type === 'touchstart' || e.type === 'mousedown') drawOnCanvas(x, y, true, true);
+                else if (e.buttons === 1 || e.type === 'touchmove') drawOnCanvas(x, y, false, true);
             };
 
             const sendMessage = () => {
                 if (!inputText.trim() || !connection) return;
+                const expiryTime = selfDestruct ? Date.now() + 60000 : null;
                 connection.send({ type: 'chat', text: inputText });
                 connection.send({ type: 'typing', status: false });
-                setMessages(prev => [...prev, { id: Date.now(), sender: 'me', text: inputText, time: new Date().toLocaleTimeString() }]);
+                setMessages(prev => [...prev, { id: Date.now(), sender: 'me', text: inputText, time: new Date().toLocaleTimeString(), expiry: expiryTime }]);
                 setInputText('');
             };
 
-            useEffect(() => {
-                if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
-            }, [messages, isRemoteTyping]);
+            const shareLink = async () => {
+                const shareUrl = `${window.location.origin}${window.location.pathname}?join=${myId}`;
+                if (navigator.share && /Android|iPhone/i.test(navigator.userAgent)) {
+                    try { await navigator.share({ title: 'Hub Pro', url: shareUrl }); } catch (err) { navigator.clipboard.writeText(shareUrl); showToast("Link Kopyalandı!"); }
+                } else { navigator.clipboard.writeText(shareUrl); showToast("Link Kopyalandı!"); }
+            };
 
             useEffect(() => {
                 if (myId && showQr && qrRef.current) {
@@ -259,7 +291,7 @@
             }, [myId, showQr]);
 
             return (
-                <div className="h-screen w-screen flex items-center justify-center bg-slate-950 font-sans no-select overflow-hidden">
+                <div className={`h-screen w-screen flex items-center justify-center bg-slate-950 font-sans no-select overflow-hidden ${isBuzzing ? 'buzz-shake' : ''}`}>
                     <div className="w-full max-w-md bg-slate-900 h-full md:h-[90vh] md:rounded-[2.5rem] flex flex-col relative border-slate-800 border-x shadow-2xl">
                         
                         {/* Header */}
@@ -268,25 +300,28 @@
                                 <div className="flex items-center gap-2">
                                     <div className={`w-3 h-3 rounded-full ${connection ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]' : 'bg-slate-700'}`}></div>
                                     <div className="flex flex-col">
-                                        <h1 className="text-[10px] font-black text-indigo-500 uppercase tracking-widest">Hub v6.0 PRO</h1>
-                                        <span className="text-[7px] text-slate-500 font-bold uppercase tracking-widest">{connection ? 'OPERASYON AKTİF' : 'HAT BEKLENİYOR'}</span>
+                                        <h1 className="text-[10px] font-black text-indigo-500 uppercase tracking-widest">Hub v6.2 PRO</h1>
+                                        <span className="text-[7px] text-slate-500 font-bold uppercase">{connection ? 'OPERASYON AKTİF' : 'HAT BEKLENİYOR'}</span>
                                     </div>
                                 </div>
                                 <div className="flex gap-2">
-                                    <button onClick={shareLink} className="p-2 bg-slate-800 text-indigo-400 rounded-xl active:scale-90"><Icon name="share-2" size={18} /></button>
-                                    <button onClick={() => setShowQr(!showQr)} className="p-2 bg-indigo-600 text-white rounded-xl shadow-lg active:scale-90"><Icon name={showQr ? "x" : "qr-code"} size={18} /></button>
+                                    <button onClick={() => setSelfDestruct(!selfDestruct)} className={`p-2 rounded-xl transition-all ${selfDestruct ? 'bg-red-500 text-white shadow-lg shadow-red-500/20' : 'bg-slate-800 text-slate-500'}`}>
+                                        <Icon name="timer" size={18} />
+                                    </button>
+                                    <button onClick={shareLink} className="p-2 bg-slate-800 text-indigo-400 rounded-xl"><Icon name="share-2" size={18} /></button>
+                                    <button onClick={() => setShowQr(!showQr)} className="p-2 bg-indigo-600 text-white rounded-xl shadow-lg"><Icon name={showQr ? "x" : "qr-code"} size={18} /></button>
                                 </div>
                             </div>
                             <div className="bg-slate-950 p-3 rounded-2xl flex items-center justify-between border border-slate-800">
                                 <div className="truncate pr-2">
-                                    <p className="text-[8px] text-slate-600 font-black uppercase tracking-widest mb-1">Cihaz Kimliği</p>
+                                    <p className="text-[8px] text-slate-600 font-black uppercase mb-1">Cihaz Kimliği</p>
                                     <p className="text-lg font-mono font-black text-indigo-400 truncate">{myId || "..."}</p>
                                 </div>
-                                <button onClick={() => copyToClipboard(myId)} className="text-slate-700 p-2"><Icon name="copy" size={16} /></button>
+                                <button onClick={() => {navigator.clipboard.writeText(myId); showToast("Kod Kopyalandı!");}} className="text-slate-700 p-2"><Icon name="copy" size={16} /></button>
                             </div>
                         </div>
 
-                        {/* Navigasyon - Bildirimli */}
+                        {/* Navigasyon */}
                         <div className="flex p-1 bg-slate-950/30 gap-1 border-b border-slate-800 shrink-0">
                             {[
                                 { id: 'transfer', icon: 'file-up', label: 'Dosya' },
@@ -294,162 +329,119 @@
                                 { id: 'chat', icon: 'message-square', label: 'Mesaj', unread: unreadCounts.chat }
                             ].map(tab => (
                                 <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 py-3 rounded-2xl transition-all font-bold text-[9px] uppercase tracking-tighter relative ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 hover:bg-slate-800'}`}>
-                                    {tab.unread > 0 && (
-                                        <span className="absolute top-2 right-4 w-2 h-2 bg-red-500 rounded-full animate-pulse shadow-lg shadow-red-500/50"></span>
-                                    )}
-                                    <Icon name={tab.icon} size={16} className="mb-0.5" />
-                                    <br/>{tab.label} {tab.unread > 0 && `(${tab.unread})`}
+                                    {tab.unread > 0 && <span className="absolute top-2 right-4 w-2 h-2 bg-red-500 rounded-full animate-pulse shadow-red-500/50"></span>}
+                                    <Icon name={tab.icon} size={16} className="mb-0.5" /><br/>{tab.label}
                                 </button>
                             ))}
                         </div>
 
-                        {/* Ana İçerik */}
-                        <div className="flex-1 overflow-y-auto relative bg-slate-900/40">
+                        {/* İçerik */}
+                        <div className="flex-1 relative bg-slate-900/40">
                             {showQr && (
                                 <div className="absolute inset-0 z-50 bg-slate-950/98 backdrop-blur-md flex items-center justify-center p-8 fade-in">
                                     <div className="bg-white p-8 rounded-[2.5rem] text-center w-full max-w-[280px] shadow-2xl">
-                                        <div ref={qrRef} className="flex justify-center mb-6 bg-white p-2 rounded-xl border border-slate-100"></div>
-                                        <button onClick={shareLink} className="bg-indigo-600 text-white w-full py-3 rounded-xl font-black text-xs uppercase shadow-lg mb-2">DAVET ET</button>
+                                        <div ref={qrRef} className="flex justify-center mb-6 bg-white p-2 rounded-xl"></div>
+                                        <button onClick={shareLink} className="bg-indigo-600 text-white w-full py-3 rounded-xl font-black text-xs uppercase mb-2">DAVET ET</button>
                                         <button onClick={()=>setShowQr(false)} className="bg-slate-200 text-slate-800 w-full py-2 rounded-xl font-black text-[10px] uppercase">KAPAT</button>
                                     </div>
                                 </div>
                             )}
 
                             {!connection && transferStatus !== 'connecting' ? (
-                                <div className="h-full p-6 flex flex-col space-y-6 fade-in">
-                                    <div className="flex-1 flex flex-col items-center justify-center space-y-4">
-                                        <div className="w-16 h-16 bg-slate-800 rounded-3xl flex items-center justify-center border border-slate-700 shadow-xl">
-                                            <Icon name="shield" size={32} className="text-indigo-500" />
-                                        </div>
-                                        <input value={remoteId} onChange={(e)=>setRemoteId(e.target.value.toUpperCase())} placeholder="HEDEF KOD" className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-center font-mono font-black text-2xl text-indigo-400 outline-none focus:border-indigo-600" />
-                                        <button onClick={() => connectToPeer()} className="w-full bg-indigo-600 py-4 rounded-2xl font-black text-sm text-white shadow-xl hover:bg-indigo-500 transition-all active:scale-95">BAĞLAN</button>
+                                <div className="h-full p-6 flex flex-col items-center justify-center space-y-6 fade-in">
+                                    <Icon name="shield" size={48} className="text-slate-700" />
+                                    <input value={remoteId} onChange={(e)=>setRemoteId(e.target.value.toUpperCase())} placeholder="HEDEF KOD" className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-center font-mono font-black text-2xl text-indigo-400 outline-none" />
+                                    <button onClick={() => connectToPeer()} className="w-full bg-indigo-600 py-4 rounded-2xl font-black text-sm text-white shadow-xl hover:bg-indigo-500">BAĞLAN</button>
+                                    <div className="w-full space-y-2">
+                                        {pairedDevices.map(id => (
+                                            <button key={id} onClick={() => connectToPeer(id)} className="w-full flex justify-between bg-slate-900 p-3 rounded-xl border border-slate-800 hover:border-indigo-500 transition-all">
+                                                <span className="font-mono font-bold text-slate-500">{id}</span>
+                                                <Icon name="zap" size={12} className="text-indigo-900" />
+                                            </button>
+                                        ))}
                                     </div>
-                                    {pairedDevices.length > 0 && (
-                                        <div className="bg-slate-950/40 p-4 rounded-3xl border border-slate-800">
-                                            <p className="text-[9px] font-black text-slate-700 uppercase mb-3 text-center tracking-[0.3em]">GEÇMİŞ CİHAZLAR</p>
-                                            <div className="space-y-2">
-                                                {pairedDevices.map(id => (
-                                                    <button key={id} onClick={() => connectToPeer(id)} className="w-full flex justify-between items-center bg-slate-900 p-3 rounded-xl border border-slate-800 hover:border-indigo-500 transition-all">
-                                                        <span className="font-mono font-bold text-slate-500">{id}</span>
-                                                        <Icon name="zap" size={12} className="text-indigo-900" />
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )}
                                 </div>
                             ) : (
-                                <div className="h-full flex flex-col fade-in">
-                                    {transferStatus === 'connecting' && <div className="h-full flex flex-col items-center justify-center"><div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div></div>}
-                                    
-                                    {connection && (
-                                        <div className="flex-1 flex flex-col">
-                                            {activeTab === 'transfer' && (
-                                                <div className="h-full p-6 flex flex-col justify-center space-y-6 text-center">
-                                                    <div className="bg-slate-950/50 border-2 border-dashed border-slate-800 rounded-[2.5rem] p-8 shadow-inner relative overflow-hidden">
-                                                        {(transferStatus === 'sending' || transferStatus === 'receiving') ? (
-                                                            <div className="space-y-6">
-                                                                <div className="text-[2.5rem] font-black text-indigo-500">%{transferProgress}</div>
-                                                                <p className="text-[10px] font-black text-indigo-400 animate-pulse uppercase tracking-[0.4em]">VERİ SIZDIRILIYOR...</p>
-                                                            </div>
-                                                        ) : receivedFile ? (
-                                                            <div className="space-y-6 animate-in zoom-in duration-300">
-                                                                {receivedFile.type.startsWith('image/') && <img src={receivedFile.url} className="w-full h-40 object-contain rounded-2xl border border-slate-800 shadow-xl bg-slate-950" />}
-                                                                <div className="space-y-1">
-                                                                    <Icon name="check-circle" size={40} className="text-green-500 mx-auto" />
-                                                                    <p className="font-black text-[10px] text-white truncate px-4">{receivedFile.name}</p>
-                                                                </div>
-                                                                <a href={receivedFile.url} download={receivedFile.name} className="block w-full bg-green-600 py-4 rounded-2xl font-black text-xs text-white uppercase shadow-lg shadow-green-900/40 hover:bg-green-500">KAYDET</a>
-                                                                <button onClick={() => {setReceivedFile(null); setTransferStatus('connected');}} className="text-[9px] text-slate-600 font-black uppercase underline">YENİ AKTARIM</button>
-                                                            </div>
-                                                        ) : (
-                                                            <div className="space-y-6">
-                                                                <Icon name="file-up" size={56} className="text-indigo-500/20 mx-auto" />
-                                                                <p className="text-[10px] text-slate-500 font-bold px-4 uppercase italic">"Veri transferine hazırız Müdürüm."</p>
-                                                                <input type="file" onChange={(e) => {
-                                                                    const file = e.target.files[0];
-                                                                    if (!file || !connection) return;
-                                                                    setTransferStatus('sending'); setTransferProgress(0);
-                                                                    const chunkSize = 64 * 1024;
-                                                                    const totalChunks = Math.ceil(file.size / chunkSize);
-                                                                    const fileId = Math.random().toString(36).substring(7);
-                                                                    (async () => {
-                                                                        for (let i = 0; i < totalChunks; i++) {
-                                                                            const start = i * chunkSize;
-                                                                            const chunk = file.slice(start, Math.min(file.size, start + chunkSize));
-                                                                            connection.send({ type: 'file-chunk', fileId, fileName: file.name, fileType: file.type, chunk: await chunk.arrayBuffer(), totalChunks, currentChunk: i });
-                                                                            setTransferProgress(Math.round(((i + 1) / totalChunks) * 100));
-                                                                            if (i % 12 === 0) await new Promise(r => setTimeout(r, 1));
-                                                                        }
-                                                                        setTransferStatus('completed');
-                                                                    })();
-                                                                }} className="hidden" ref={fileInputRef} />
-                                                                <button onClick={() => fileInputRef.current.click()} className="bg-indigo-600 px-10 py-4 rounded-2xl font-black text-xs text-white uppercase shadow-xl hover:bg-indigo-500 active:scale-95 transition-all">DOSYA SEÇ</button>
-                                                            </div>
-                                                        )}
-                                                    </div>
+                                <div className="h-full relative overflow-hidden">
+                                    {/* DOSYA */}
+                                    <div className={`h-full overflow-y-auto p-6 flex flex-col justify-center space-y-6 text-center ${activeTab === 'transfer' ? 'block' : 'hidden'}`}>
+                                        <div className="bg-slate-950/50 border-2 border-dashed border-slate-800 rounded-[2.5rem] p-8 shadow-inner">
+                                            {(transferStatus === 'sending' || transferStatus === 'receiving') ? (
+                                                <div className="space-y-6"><div className="text-[2.5rem] font-black text-indigo-500">%{transferProgress}</div><p className="text-[10px] font-black text-indigo-400 animate-pulse uppercase tracking-[0.4em]">SIZDIRILIYOR...</p></div>
+                                            ) : receivedFile ? (
+                                                <div className="space-y-6 animate-in zoom-in duration-300">
+                                                    {receivedFile.type.startsWith('image/') && <img src={receivedFile.url} className="w-full h-40 object-contain rounded-2xl bg-black" />}
+                                                    <Icon name="check-circle" size={40} className="text-green-500 mx-auto" />
+                                                    <p className="font-black text-[10px] text-white truncate px-4">{receivedFile.name}</p>
+                                                    <a href={receivedFile.url} download={receivedFile.name} className="block w-full bg-green-600 py-4 rounded-2xl font-black text-xs text-white uppercase shadow-lg">KAYDET</a>
+                                                    <button onClick={() => {setReceivedFile(null); setTransferStatus('connected');}} className="text-[9px] text-slate-600 font-black uppercase underline">TEMİZLE</button>
                                                 </div>
-                                            )}
-
-                                            {activeTab === 'sketch' && (
-                                                <div className="h-full flex flex-col p-4 space-y-4">
-                                                    <div className="flex-1 bg-slate-950 rounded-[2rem] border border-slate-800 overflow-hidden relative shadow-inner">
-                                                        <canvas 
-                                                            ref={canvasRef} 
-                                                            width={350} height={450}
-                                                            onMouseDown={handleCanvasMouse} onMouseMove={handleCanvasMouse}
-                                                            onTouchStart={handleCanvasTouch} onTouchMove={handleCanvasTouch}
-                                                            className="w-full h-full"
-                                                        />
-                                                        <div className="absolute top-4 right-4 flex gap-2">
-                                                            <button onClick={handleClear} className="p-2 bg-slate-900/80 text-red-500 rounded-xl border border-slate-800 shadow-lg active:scale-90"><Icon name="trash-2" size={16} /></button>
-                                                        </div>
-                                                        <div className="absolute bottom-4 left-4 pointer-events-none opacity-20">
-                                                            <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest underline tracking-[0.2em]">PLANLAMA TAHTASI</span>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            )}
-
-                                            {activeTab === 'chat' && (
-                                                <div className="h-full p-6 flex flex-col">
-                                                    <div className="flex-1 space-y-4 mb-4 overflow-y-auto pr-1 scroll-smooth">
-                                                        {messages.map((m) => (
-                                                            <div key={m.id} className={`flex flex-col ${m.sender === 'me' ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-2 duration-200`}>
-                                                                <div className={`max-w-[85%] p-4 rounded-3xl text-sm ${m.sender === 'me' ? 'bg-indigo-600 text-white rounded-tr-none shadow-lg' : 'bg-slate-800 text-slate-200 rounded-tl-none border border-slate-700'}`}>{m.text}</div>
-                                                                <span className="text-[8px] text-slate-700 mt-1 uppercase font-black">{m.time}</span>
-                                                            </div>
-                                                        ))}
-                                                        
-                                                        {isRemoteTyping && (
-                                                            <div className="flex items-start">
-                                                                <div className="bg-slate-800 p-3 rounded-2xl rounded-tl-none flex gap-1">
-                                                                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full typing-dot"></div>
-                                                                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full typing-dot"></div>
-                                                                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full typing-dot"></div>
-                                                                </div>
-                                                            </div>
-                                                        )}
-                                                        <div ref={chatEndRef} />
-                                                    </div>
-                                                    <div className="flex gap-2 p-2 bg-slate-950 rounded-[3rem] border border-slate-800 shrink-0">
-                                                        <input value={inputText} onChange={handleInputChange} onKeyPress={(e)=>e.key === 'Enter' && sendMessage()} placeholder="OPERASYON NOTU..." className="flex-1 bg-transparent px-4 py-2 text-[10px] font-bold outline-none text-white uppercase placeholder:text-slate-800" />
-                                                        <button onClick={sendMessage} className="bg-indigo-600 p-3 rounded-full text-white active:scale-90 transition-transform shadow-lg shadow-indigo-600/20"><Icon name="send" size={18} /></button>
-                                                    </div>
+                                            ) : (
+                                                <div className="space-y-6">
+                                                    <Icon name="file-up" size={56} className="text-indigo-500/20 mx-auto" />
+                                                    <input type="file" onChange={(e) => {
+                                                        const file = e.target.files[0]; if (!file || !connection) return;
+                                                        setTransferStatus('sending');
+                                                        (async () => {
+                                                            const chunkSize = 64 * 1024; const totalChunks = Math.ceil(file.size / chunkSize);
+                                                            const fileId = Math.random().toString(36).substring(7);
+                                                            for (let i = 0; i < totalChunks; i++) {
+                                                                const chunk = file.slice(i * chunkSize, Math.min(file.size, (i + 1) * chunkSize));
+                                                                connection.send({ type: 'file-chunk', fileId, fileName: file.name, fileType: file.type, chunk: await chunk.arrayBuffer(), totalChunks, currentChunk: i });
+                                                                setTransferProgress(Math.round(((i + 1) / totalChunks) * 100));
+                                                                if (i % 12 === 0) await new Promise(r => setTimeout(r, 1));
+                                                            }
+                                                            setTransferStatus('completed');
+                                                        })();
+                                                    }} className="hidden" ref={fileInputRef} />
+                                                    <button onClick={() => fileInputRef.current.click()} className="bg-indigo-600 px-10 py-4 rounded-2xl font-black text-xs text-white uppercase">DOSYA SEÇ</button>
                                                 </div>
                                             )}
                                         </div>
-                                    )}
+                                    </div>
+
+                                    {/* PLAN */}
+                                    <div className={`h-full flex flex-col p-4 space-y-4 ${activeTab === 'sketch' ? 'block' : 'hidden'}`}>
+                                        <div className="flex-1 bg-slate-950 rounded-[2rem] border border-slate-800 overflow-hidden relative">
+                                            <canvas ref={canvasRef} width={350} height={450} onMouseDown={handleCanvasInteraction} onMouseMove={handleCanvasInteraction} onTouchStart={handleCanvasInteraction} onTouchMove={handleCanvasInteraction} className="w-full h-full" />
+                                            <button onClick={handleClear} className="absolute top-4 right-4 p-2 bg-slate-900/80 text-red-500 rounded-xl border border-slate-800 active:scale-90"><Icon name="trash-2" size={16} /></button>
+                                            {selfDestruct && <div className="absolute top-0 left-0 w-full h-1 bg-red-900 overflow-hidden"><div className="destruct-timer"></div></div>}
+                                        </div>
+                                    </div>
+
+                                    {/* MESAJ */}
+                                    <div className={`h-full p-6 flex flex-col ${activeTab === 'chat' ? 'block' : 'hidden'}`}>
+                                        <div className="flex-1 space-y-4 mb-4 overflow-y-auto pr-1 scroll-smooth">
+                                            {messages.map((m) => (
+                                                <div key={m.id} className={`flex flex-col ${m.sender === 'me' ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-2`}>
+                                                    <div className={`max-w-[85%] p-4 rounded-3xl text-sm relative overflow-hidden ${m.sender === 'me' ? 'bg-indigo-600 text-white rounded-tr-none shadow-lg' : 'bg-slate-800 text-slate-200 rounded-tl-none border border-slate-700'}`}>
+                                                        {m.audio ? <audio controls src={m.audio} className="w-48 h-8 filter invert opacity-80" /> : m.text}
+                                                        {m.expiry && <div className="absolute bottom-0 left-0 destruct-timer h-0.5"></div>}
+                                                    </div>
+                                                    <span className="text-[8px] text-slate-700 mt-1 uppercase font-black">{m.time}</span>
+                                                </div>
+                                            ))}
+                                            {isRemoteTyping && <div className="flex gap-1 bg-slate-800 p-3 rounded-2xl w-fit"><div className="w-1.5 h-1.5 bg-slate-500 rounded-full typing-dot"></div><div className="w-1.5 h-1.5 bg-slate-500 rounded-full typing-dot"></div><div className="w-1.5 h-1.5 bg-slate-500 rounded-full typing-dot"></div></div>}
+                                            <div ref={chatEndRef} />
+                                        </div>
+                                        <div className="flex gap-2 items-center">
+                                            <button onClick={sendBuzz} className="p-3 bg-red-500/20 text-red-500 rounded-2xl active:scale-90"><Icon name="bell" size={20} /></button>
+                                            <div className="flex-1 flex gap-2 p-2 bg-slate-950 rounded-[3rem] border border-slate-800">
+                                                <button onMouseDown={startRecording} onMouseUp={stopRecording} onTouchStart={startRecording} onTouchEnd={stopRecording} className={`p-2 rounded-full transition-all ${isRecording ? 'bg-red-500 text-white scale-110 animate-pulse' : 'text-slate-500'}`}><Icon name="mic" size={20} /></button>
+                                                <input value={inputText} onChange={(e)=>{setInputText(e.target.value); if(connection) connection.send({type:'typing',status:true}); clearTimeout(typingTimeoutRef.current); typingTimeoutRef.current=setTimeout(()=>connection.send({type:'typing',status:false}),2000)}} onKeyPress={(e)=>e.key === 'Enter' && sendMessage()} placeholder={isRecording ? "Kaydediliyor..." : "MESAJ..."} className="flex-1 bg-transparent px-2 text-[10px] font-bold outline-none text-white uppercase" />
+                                                <button onClick={sendMessage} className="bg-indigo-600 p-3 rounded-full text-white active:scale-90"><Icon name="send" size={18} /></button>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             )}
                         </div>
 
-                        {/* Toast Bildirimler */}
                         {toast.show && <div className="absolute bottom-24 left-1/2 -translate-x-1/2 bg-indigo-600 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase shadow-2xl z-[100] toast-active">{toast.message}</div>}
 
                         <div className="p-4 bg-slate-950 flex justify-between items-center px-10 border-t border-slate-800 shrink-0 safe-bottom">
-                            <span className="text-[8px] font-black text-slate-800 uppercase tracking-widest italic">Live Status Sync v6.0</span>
-                            <span className="text-[9px] font-black text-indigo-950 uppercase tracking-widest italic tracking-tighter">MÜDÜRÜM PRO</span>
+                            <span className="text-[8px] font-black text-slate-800 uppercase italic">Advanced Ops v6.2</span>
+                            <span className="text-[9px] font-black text-indigo-950 uppercase italic">MÜDÜRÜM PRO</span>
                         </div>
                     </div>
                 </div>
