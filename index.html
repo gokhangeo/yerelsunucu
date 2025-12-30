@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>Müdürüm Hub - Pro V5.8</title>
+    <title>Müdürüm Hub - Pro V6.0</title>
     
+    <!-- Kütüphaneler -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -21,16 +22,16 @@
         .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
         #root:empty { display: flex; align-items: center; justify-content: center; height: 100vh; color: #6366f1; font-family: sans-serif; font-weight: bold; }
         
-        @keyframes pulse-red {
-            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
-            70% { box-shadow: 0 0 0 15px rgba(239, 68, 68, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
-        }
-        .animate-led { animation: pulse-red 2s infinite; }
         .fade-in { animation: fadeIn 0.3s ease-in; }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-        /* Çizim Tahtası Stilleri */
+        /* Yazıyor animasyonu */
+        .typing-dot { animation: typing 1.4s infinite; }
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes typing { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
+
+        /* Çizim Tahtası */
         canvas { touch-action: none; cursor: crosshair; }
         .toast-active { transform: translateY(0); opacity: 1; transition: all 0.3s ease-out; }
     </style>
@@ -64,17 +65,18 @@
             const [transferProgress, setTransferProgress] = useState(0);
             const [receivedFile, setReceivedFile] = useState(null);
             const [showQr, setShowQr] = useState(false);
-            const [isTalking, setIsTalking] = useState(false);
             const [pairedDevices, setPairedDevices] = useState([]);
             const [toast, setToast] = useState({ show: false, message: '' });
 
+            // Yeni Bildirim ve Yazıyor State'leri
+            const [isRemoteTyping, setIsRemoteTyping] = useState(false);
+            const [unreadCounts, setUnreadCounts] = useState({ chat: 0, sketch: 0 });
+            
             const canvasRef = useRef(null);
             const fileInputRef = useRef(null);
             const qrRef = useRef(null);
             const chatEndRef = useRef(null);
-            const remoteAudioRef = useRef(null);
-            const myStreamRef = useRef(null);
-            const currentCallRef = useRef(null);
+            const typingTimeoutRef = useRef(null);
             
             const chunkBuffers = useRef({});
 
@@ -83,13 +85,19 @@
                 setTimeout(() => setToast({ show: false, message: '' }), 3000);
             };
 
+            // Sekme değişince unread sayısını sıfırla
+            useEffect(() => {
+                if (activeTab === 'chat') setUnreadCounts(prev => ({ ...prev, chat: 0 }));
+                if (activeTab === 'sketch') setUnreadCounts(prev => ({ ...prev, sketch: 0 }));
+            }, [activeTab]);
+
             const setupConnection = (conn) => {
                 if (!conn) return;
                 conn.on('open', () => {
                     setConnection(conn);
                     setTransferStatus('connected');
                     setRemoteId(conn.peer);
-                    showToast("Hat Kuruldu!");
+                    showToast("Bağlantı Aktif!");
                     setPairedDevices(prev => {
                         if (!prev.includes(conn.peer)) {
                             const updated = [conn.peer, ...prev].slice(0, 5);
@@ -116,9 +124,14 @@
                             showToast("Dosya Alındı!");
                         }
                     } else if (data.type === 'chat') {
+                        setIsRemoteTyping(false);
                         setMessages(prev => [...prev, { id: Date.now(), sender: 'other', text: data.text, time: new Date().toLocaleTimeString() }]);
+                        if (activeTab !== 'chat') setUnreadCounts(prev => ({ ...prev, chat: prev.chat + 1 }));
+                    } else if (data.type === 'typing') {
+                        setIsRemoteTyping(data.status);
                     } else if (data.type === 'draw') {
                         drawOnCanvas(data.x, data.y, data.isNewPath, false);
+                        if (activeTab !== 'sketch') setUnreadCounts(prev => ({ ...prev, sketch: 1 }));
                     } else if (data.type === 'clear-canvas') {
                         clearLocalCanvas();
                     }
@@ -146,11 +159,6 @@
                     if (joinId && joinId !== savedId) { setRemoteId(joinId); setTransferStatus('connecting'); setupConnection(newPeer.connect(joinId, { reliable: true })); }
                 });
                 newPeer.on('connection', setupConnection);
-                newPeer.on('call', (call) => {
-                    call.answer(); 
-                    if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-                    call.on('stream', (stream) => { if (remoteAudioRef.current) remoteAudioRef.current.srcObject = stream; });
-                });
                 return () => { if (newPeer) newPeer.destroy(); };
             }, []);
 
@@ -194,7 +202,6 @@
                 const touch = e.touches[0];
                 const x = touch.clientX - rect.left;
                 const y = touch.clientY - rect.top;
-                
                 if (e.type === 'touchstart') drawOnCanvas(x, y, true, true);
                 else drawOnCanvas(x, y, false, true);
             };
@@ -205,16 +212,14 @@
                 const rect = canvas.getBoundingClientRect();
                 const x = e.clientX - rect.left;
                 const y = e.clientY - rect.top;
-                
                 if (e.type === 'mousedown') drawOnCanvas(x, y, true, true);
                 else drawOnCanvas(x, y, false, true);
             };
 
-            // --- Diğer İşlemler ---
             const shareLink = async () => {
                 const shareUrl = `${window.location.origin}${window.location.pathname}?join=${myId}`;
                 if (navigator.share && /Android|iPhone|iPad/i.test(navigator.userAgent)) {
-                    try { await navigator.share({ title: 'Hub Pro', text: `Müdürüm Hub Bağlantısı: ${myId}`, url: shareUrl }); } catch (err) { copyToClipboard(shareUrl); }
+                    try { await navigator.share({ title: 'Hub Pro', text: `Operasyon Bağlantısı: ${myId}`, url: shareUrl }); } catch (err) { copyToClipboard(shareUrl); }
                 } else { copyToClipboard(shareUrl); }
             };
 
@@ -222,16 +227,29 @@
                 navigator.clipboard.writeText(text).then(() => showToast("Kopyalandı!"));
             };
 
+            // Yazıyor durumu gönderimi
+            const handleInputChange = (e) => {
+                setInputText(e.target.value);
+                if (connection) {
+                    connection.send({ type: 'typing', status: true });
+                    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+                    typingTimeoutRef.current = setTimeout(() => {
+                        connection.send({ type: 'typing', status: false });
+                    }, 2000);
+                }
+            };
+
             const sendMessage = () => {
                 if (!inputText.trim() || !connection) return;
                 connection.send({ type: 'chat', text: inputText });
+                connection.send({ type: 'typing', status: false });
                 setMessages(prev => [...prev, { id: Date.now(), sender: 'me', text: inputText, time: new Date().toLocaleTimeString() }]);
                 setInputText('');
             };
 
             useEffect(() => {
                 if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
-            }, [messages]);
+            }, [messages, isRemoteTyping]);
 
             useEffect(() => {
                 if (myId && showQr && qrRef.current) {
@@ -248,48 +266,50 @@
                         <div className="p-6 bg-slate-900 border-b border-slate-800 shrink-0">
                             <div className="flex justify-between items-center mb-4">
                                 <div className="flex items-center gap-2">
-                                    <div className={`w-3 h-3 rounded-full ${isTalking ? 'bg-red-500 animate-led' : (connection ? 'bg-green-500' : 'bg-slate-700')}`}></div>
+                                    <div className={`w-3 h-3 rounded-full ${connection ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]' : 'bg-slate-700'}`}></div>
                                     <div className="flex flex-col">
-                                        <h1 className="text-[10px] font-black text-indigo-500 uppercase tracking-widest">Hub v5.8 PRO</h1>
+                                        <h1 className="text-[10px] font-black text-indigo-500 uppercase tracking-widest">Hub v6.0 PRO</h1>
                                         <span className="text-[7px] text-slate-500 font-bold uppercase tracking-widest">{connection ? 'OPERASYON AKTİF' : 'HAT BEKLENİYOR'}</span>
                                     </div>
                                 </div>
                                 <div className="flex gap-2">
-                                    <button onClick={shareLink} className="p-2 bg-slate-800 text-indigo-400 rounded-xl"><Icon name="share-2" size={18} /></button>
-                                    <button onClick={() => setShowQr(!showQr)} className="p-2 bg-indigo-600 text-white rounded-xl shadow-lg"><Icon name={showQr ? "x" : "qr-code"} size={18} /></button>
+                                    <button onClick={shareLink} className="p-2 bg-slate-800 text-indigo-400 rounded-xl active:scale-90"><Icon name="share-2" size={18} /></button>
+                                    <button onClick={() => setShowQr(!showQr)} className="p-2 bg-indigo-600 text-white rounded-xl shadow-lg active:scale-90"><Icon name={showQr ? "x" : "qr-code"} size={18} /></button>
                                 </div>
                             </div>
                             <div className="bg-slate-950 p-3 rounded-2xl flex items-center justify-between border border-slate-800">
                                 <div className="truncate pr-2">
-                                    <p className="text-[8px] text-slate-600 font-black uppercase tracking-widest mb-1">Cihaz Sabit ID</p>
+                                    <p className="text-[8px] text-slate-600 font-black uppercase tracking-widest mb-1">Cihaz Kimliği</p>
                                     <p className="text-lg font-mono font-black text-indigo-400 truncate">{myId || "..."}</p>
                                 </div>
                                 <button onClick={() => copyToClipboard(myId)} className="text-slate-700 p-2"><Icon name="copy" size={16} /></button>
                             </div>
                         </div>
 
-                        {/* Tabs */}
-                        <div className="flex p-1 bg-slate-950/30 gap-1 border-b border-slate-800 shrink-0 overflow-x-auto no-scrollbar">
+                        {/* Navigasyon - Bildirimli */}
+                        <div className="flex p-1 bg-slate-950/30 gap-1 border-b border-slate-800 shrink-0">
                             {[
                                 { id: 'transfer', icon: 'file-up', label: 'Dosya' },
-                                { id: 'sketch', icon: 'pen-tool', label: 'Plan' },
-                                { id: 'chat', icon: 'message-square', label: 'Mesaj' },
-                                { id: 'radio', icon: 'volume-2', label: 'Telsiz' }
+                                { id: 'sketch', icon: 'pen-tool', label: 'Plan', unread: unreadCounts.sketch },
+                                { id: 'chat', icon: 'message-square', label: 'Mesaj', unread: unreadCounts.chat }
                             ].map(tab => (
-                                <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 py-3 rounded-2xl transition-all font-bold text-[9px] uppercase tracking-tighter ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600'}`}>
+                                <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 py-3 rounded-2xl transition-all font-bold text-[9px] uppercase tracking-tighter relative ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 hover:bg-slate-800'}`}>
+                                    {tab.unread > 0 && (
+                                        <span className="absolute top-2 right-4 w-2 h-2 bg-red-500 rounded-full animate-pulse shadow-lg shadow-red-500/50"></span>
+                                    )}
                                     <Icon name={tab.icon} size={16} className="mb-0.5" />
-                                    <br/>{tab.label}
+                                    <br/>{tab.label} {tab.unread > 0 && `(${tab.unread})`}
                                 </button>
                             ))}
                         </div>
 
-                        {/* Body */}
+                        {/* Ana İçerik */}
                         <div className="flex-1 overflow-y-auto relative bg-slate-900/40">
                             {showQr && (
                                 <div className="absolute inset-0 z-50 bg-slate-950/98 backdrop-blur-md flex items-center justify-center p-8 fade-in">
                                     <div className="bg-white p-8 rounded-[2.5rem] text-center w-full max-w-[280px] shadow-2xl">
-                                        <div ref={qrRef} className="flex justify-center mb-6 bg-white p-2 rounded-xl"></div>
-                                        <button onClick={shareLink} className="bg-indigo-600 text-white w-full py-3 rounded-xl font-black text-xs uppercase mb-2">LİNKİ PAYLAŞ</button>
+                                        <div ref={qrRef} className="flex justify-center mb-6 bg-white p-2 rounded-xl border border-slate-100"></div>
+                                        <button onClick={shareLink} className="bg-indigo-600 text-white w-full py-3 rounded-xl font-black text-xs uppercase shadow-lg mb-2">DAVET ET</button>
                                         <button onClick={()=>setShowQr(false)} className="bg-slate-200 text-slate-800 w-full py-2 rounded-xl font-black text-[10px] uppercase">KAPAT</button>
                                     </div>
                                 </div>
@@ -301,17 +321,17 @@
                                         <div className="w-16 h-16 bg-slate-800 rounded-3xl flex items-center justify-center border border-slate-700 shadow-xl">
                                             <Icon name="shield" size={32} className="text-indigo-500" />
                                         </div>
-                                        <input value={remoteId} onChange={(e)=>setRemoteId(e.target.value.toUpperCase())} placeholder="HEDEF KOD" className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-center font-mono font-black text-2xl text-indigo-400 outline-none" />
-                                        <button onClick={() => connectToPeer()} className="w-full bg-indigo-600 py-4 rounded-2xl font-black text-sm text-white shadow-xl hover:bg-indigo-500 transition-all">BAĞLAN</button>
+                                        <input value={remoteId} onChange={(e)=>setRemoteId(e.target.value.toUpperCase())} placeholder="HEDEF KOD" className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-center font-mono font-black text-2xl text-indigo-400 outline-none focus:border-indigo-600" />
+                                        <button onClick={() => connectToPeer()} className="w-full bg-indigo-600 py-4 rounded-2xl font-black text-sm text-white shadow-xl hover:bg-indigo-500 transition-all active:scale-95">BAĞLAN</button>
                                     </div>
                                     {pairedDevices.length > 0 && (
                                         <div className="bg-slate-950/40 p-4 rounded-3xl border border-slate-800">
-                                            <p className="text-[9px] font-black text-slate-700 uppercase mb-3 text-center tracking-[0.3em]">GEÇMİŞ OPERASYONLAR</p>
+                                            <p className="text-[9px] font-black text-slate-700 uppercase mb-3 text-center tracking-[0.3em]">GEÇMİŞ CİHAZLAR</p>
                                             <div className="space-y-2">
                                                 {pairedDevices.map(id => (
                                                     <button key={id} onClick={() => connectToPeer(id)} className="w-full flex justify-between items-center bg-slate-900 p-3 rounded-xl border border-slate-800 hover:border-indigo-500 transition-all">
                                                         <span className="font-mono font-bold text-slate-500">{id}</span>
-                                                        <Icon name="zap" size={12} className="text-indigo-950" />
+                                                        <Icon name="zap" size={12} className="text-indigo-900" />
                                                     </button>
                                                 ))}
                                             </div>
@@ -324,29 +344,28 @@
                                     
                                     {connection && (
                                         <div className="flex-1 flex flex-col">
-                                            {/* DOSYA SEKME */}
                                             {activeTab === 'transfer' && (
                                                 <div className="h-full p-6 flex flex-col justify-center space-y-6 text-center">
-                                                    <div className="bg-slate-950/50 border-2 border-dashed border-slate-800 rounded-[2.5rem] p-8 shadow-inner">
+                                                    <div className="bg-slate-950/50 border-2 border-dashed border-slate-800 rounded-[2.5rem] p-8 shadow-inner relative overflow-hidden">
                                                         {(transferStatus === 'sending' || transferStatus === 'receiving') ? (
                                                             <div className="space-y-6">
-                                                                <div className="text-[2rem] font-black text-indigo-500">%{transferProgress}</div>
-                                                                <p className="text-[10px] font-black text-indigo-400 animate-pulse uppercase tracking-[0.4em]">SIZDIRILIYOR...</p>
+                                                                <div className="text-[2.5rem] font-black text-indigo-500">%{transferProgress}</div>
+                                                                <p className="text-[10px] font-black text-indigo-400 animate-pulse uppercase tracking-[0.4em]">VERİ SIZDIRILIYOR...</p>
                                                             </div>
                                                         ) : receivedFile ? (
                                                             <div className="space-y-6 animate-in zoom-in duration-300">
-                                                                {receivedFile.type.startsWith('image/') && <img src={receivedFile.url} className="w-full h-32 object-cover rounded-2xl border border-slate-800 shadow-xl" />}
+                                                                {receivedFile.type.startsWith('image/') && <img src={receivedFile.url} className="w-full h-40 object-contain rounded-2xl border border-slate-800 shadow-xl bg-slate-950" />}
                                                                 <div className="space-y-1">
                                                                     <Icon name="check-circle" size={40} className="text-green-500 mx-auto" />
                                                                     <p className="font-black text-[10px] text-white truncate px-4">{receivedFile.name}</p>
                                                                 </div>
-                                                                <a href={receivedFile.url} download={receivedFile.name} className="block w-full bg-green-600 py-4 rounded-2xl font-black text-xs text-white uppercase shadow-lg shadow-green-900/40">KAYDET</a>
-                                                                <button onClick={() => {setReceivedFile(null); setTransferStatus('connected');}} className="text-[9px] text-slate-600 font-black uppercase underline">TEMİZLE</button>
+                                                                <a href={receivedFile.url} download={receivedFile.name} className="block w-full bg-green-600 py-4 rounded-2xl font-black text-xs text-white uppercase shadow-lg shadow-green-900/40 hover:bg-green-500">KAYDET</a>
+                                                                <button onClick={() => {setReceivedFile(null); setTransferStatus('connected');}} className="text-[9px] text-slate-600 font-black uppercase underline">YENİ AKTARIM</button>
                                                             </div>
                                                         ) : (
                                                             <div className="space-y-6">
                                                                 <Icon name="file-up" size={56} className="text-indigo-500/20 mx-auto" />
-                                                                <p className="text-[10px] text-slate-500 font-bold px-4 uppercase italic">"Veri transferi için hat güvenli."</p>
+                                                                <p className="text-[10px] text-slate-500 font-bold px-4 uppercase italic">"Veri transferine hazırız Müdürüm."</p>
                                                                 <input type="file" onChange={(e) => {
                                                                     const file = e.target.files[0];
                                                                     if (!file || !connection) return;
@@ -360,7 +379,7 @@
                                                                             const chunk = file.slice(start, Math.min(file.size, start + chunkSize));
                                                                             connection.send({ type: 'file-chunk', fileId, fileName: file.name, fileType: file.type, chunk: await chunk.arrayBuffer(), totalChunks, currentChunk: i });
                                                                             setTransferProgress(Math.round(((i + 1) / totalChunks) * 100));
-                                                                            if (i % 10 === 0) await new Promise(r => setTimeout(r, 1));
+                                                                            if (i % 12 === 0) await new Promise(r => setTimeout(r, 1));
                                                                         }
                                                                         setTransferStatus('completed');
                                                                     })();
@@ -372,23 +391,21 @@
                                                 </div>
                                             )}
 
-                                            {/* ÇİZİM SEKME (YENİ) */}
                                             {activeTab === 'sketch' && (
                                                 <div className="h-full flex flex-col p-4 space-y-4">
                                                     <div className="flex-1 bg-slate-950 rounded-[2rem] border border-slate-800 overflow-hidden relative shadow-inner">
                                                         <canvas 
                                                             ref={canvasRef} 
-                                                            width={window.innerWidth > 400 ? 350 : window.innerWidth - 64} 
-                                                            height={400}
+                                                            width={350} height={450}
                                                             onMouseDown={handleCanvasMouse} onMouseMove={handleCanvasMouse}
                                                             onTouchStart={handleCanvasTouch} onTouchMove={handleCanvasTouch}
                                                             className="w-full h-full"
                                                         />
                                                         <div className="absolute top-4 right-4 flex gap-2">
-                                                            <button onClick={handleClear} className="p-2 bg-slate-900 text-red-500 rounded-xl border border-slate-800 shadow-lg active:scale-90"><Icon name="trash-2" size={16} /></button>
+                                                            <button onClick={handleClear} className="p-2 bg-slate-900/80 text-red-500 rounded-xl border border-slate-800 shadow-lg active:scale-90"><Icon name="trash-2" size={16} /></button>
                                                         </div>
-                                                        <div className="absolute bottom-4 left-4 pointer-events-none">
-                                                            <span className="text-[8px] font-black text-slate-700 uppercase tracking-widest">Operasyon Planlama Tahtası</span>
+                                                        <div className="absolute bottom-4 left-4 pointer-events-none opacity-20">
+                                                            <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest underline tracking-[0.2em]">PLANLAMA TAHTASI</span>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -396,34 +413,28 @@
 
                                             {activeTab === 'chat' && (
                                                 <div className="h-full p-6 flex flex-col">
-                                                    <div className="flex-1 space-y-4 mb-4 overflow-y-auto pr-1">
+                                                    <div className="flex-1 space-y-4 mb-4 overflow-y-auto pr-1 scroll-smooth">
                                                         {messages.map((m) => (
                                                             <div key={m.id} className={`flex flex-col ${m.sender === 'me' ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-2 duration-200`}>
                                                                 <div className={`max-w-[85%] p-4 rounded-3xl text-sm ${m.sender === 'me' ? 'bg-indigo-600 text-white rounded-tr-none shadow-lg' : 'bg-slate-800 text-slate-200 rounded-tl-none border border-slate-700'}`}>{m.text}</div>
                                                                 <span className="text-[8px] text-slate-700 mt-1 uppercase font-black">{m.time}</span>
                                                             </div>
                                                         ))}
+                                                        
+                                                        {isRemoteTyping && (
+                                                            <div className="flex items-start">
+                                                                <div className="bg-slate-800 p-3 rounded-2xl rounded-tl-none flex gap-1">
+                                                                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full typing-dot"></div>
+                                                                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full typing-dot"></div>
+                                                                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full typing-dot"></div>
+                                                                </div>
+                                                            </div>
+                                                        )}
                                                         <div ref={chatEndRef} />
                                                     </div>
                                                     <div className="flex gap-2 p-2 bg-slate-950 rounded-[3rem] border border-slate-800 shrink-0">
-                                                        <input value={inputText} onChange={(e)=>setInputText(e.target.value)} onKeyPress={(e)=>e.key === 'Enter' && sendMessage()} placeholder="OPERASYON NOTU..." className="flex-1 bg-transparent px-4 py-2 text-[10px] font-bold outline-none text-white uppercase" />
-                                                        <button onClick={sendMessage} className="bg-indigo-600 p-3 rounded-full text-white active:scale-90 transition-transform"><Icon name="send" size={18} /></button>
-                                                    </div>
-                                                </div>
-                                            )}
-
-                                            {activeTab === 'radio' && (
-                                                <div className="h-full flex flex-col items-center justify-center space-y-12">
-                                                    <button onMouseDown={startTalking} onMouseUp={stopTalking} onMouseLeave={stopTalking} onTouchStart={startTalking} onTouchEnd={stopTalking} className={`relative w-48 h-48 rounded-full flex flex-col items-center justify-center gap-3 border-8 transition-all active:scale-90 touch-none shadow-2xl ${isTalking ? 'bg-red-600 border-red-400 shadow-red-600/40' : 'bg-slate-800 border-slate-700'}`}>
-                                                        <Icon name={isTalking ? 'mic' : 'mic-off'} size={56} className={isTalking ? 'animate-pulse text-white' : 'text-slate-600'} />
-                                                        <span className="text-[11px] font-black text-white uppercase tracking-[0.2em]">{isTalking ? "YAYINDASIN" : "BAS KONUŞ"}</span>
-                                                    </button>
-                                                    <audio ref={remoteAudioRef} autoPlay />
-                                                    <div className="text-center space-y-2 text-slate-500 text-[10px] font-black uppercase tracking-widest">
-                                                        <div className="flex items-center justify-center gap-2">
-                                                            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                                                            <span>KANAL AKTİF: {connection.peer}</span>
-                                                        </div>
+                                                        <input value={inputText} onChange={handleInputChange} onKeyPress={(e)=>e.key === 'Enter' && sendMessage()} placeholder="OPERASYON NOTU..." className="flex-1 bg-transparent px-4 py-2 text-[10px] font-bold outline-none text-white uppercase placeholder:text-slate-800" />
+                                                        <button onClick={sendMessage} className="bg-indigo-600 p-3 rounded-full text-white active:scale-90 transition-transform shadow-lg shadow-indigo-600/20"><Icon name="send" size={18} /></button>
                                                     </div>
                                                 </div>
                                             )}
@@ -433,11 +444,12 @@
                             )}
                         </div>
 
+                        {/* Toast Bildirimler */}
                         {toast.show && <div className="absolute bottom-24 left-1/2 -translate-x-1/2 bg-indigo-600 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase shadow-2xl z-[100] toast-active">{toast.message}</div>}
 
                         <div className="p-4 bg-slate-950 flex justify-between items-center px-10 border-t border-slate-800 shrink-0 safe-bottom">
-                            <span className="text-[8px] font-black text-slate-800 uppercase tracking-widest">P2P Sketch & Sync Active</span>
-                            <span className="text-[9px] font-black text-indigo-950 uppercase tracking-widest italic">MÜDÜRÜM PRO v5.8</span>
+                            <span className="text-[8px] font-black text-slate-800 uppercase tracking-widest italic">Live Status Sync v6.0</span>
+                            <span className="text-[9px] font-black text-indigo-950 uppercase tracking-widest italic tracking-tighter">MÜDÜRÜM PRO</span>
                         </div>
                     </div>
                 </div>
